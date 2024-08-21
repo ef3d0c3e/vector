@@ -12,6 +12,8 @@
 
 #include <iostream>
 
+#include "settings.hpp"
+
 namespace vector
 {
 template <template <class, std::size_t> class S, class T, std::size_t N>
@@ -23,50 +25,65 @@ concept VecStorage = requires(S<T, N>&& s, std::size_t i) {
 /// Settings for the @see Vector class
 struct VectorSettings
 {
-	struct arithmetic_operators
+	struct Arithmetic
 	{
+		/// Enables arithmetic methods `add`, `mul`, etc.
 		bool enabled = true;
+
+		/// Overload operators for arithmetic methods (+, -, etc.)
+		bool overloads = true;
+
+		/// Overload assignment operators (+=, /=, etc.)
 		bool assignment = true;
+
+		/// Allows implicit type casting for operators
+		/// Generally `Vector<float> + Vector<int>` is ill formed
+		/// Enabling this settings will cast the result type to the type of the lhs
 		bool implicit_casting = true;
 	} arithmetic{};
 
-	struct Simd
-	{
-		bool enabled = true;
-		std::size_t max_unroll = 0;
-	};
-	Simd simd{};
+	/// Whether the vector extends it's storage class
+	/// Otherwise the storage is kept as a member
+	bool extend_storage = true;
 };
 
 namespace details
 {
+/// Utility to validate vector settings.
+/// Meant to be used to give an insight about incompatible settings
+///
+/// @tparam S The settings to validate
+template <VectorSettings S>
+consteval bool validate_settings()
+{
+	// Arithmetic
+	static_assert(S.arithmetic.enabled || !S.arithmetic.overloads, "Cannnot enable arithmetic overloads if arithmetic is disabled");
+	static_assert(S.arithmetic.overloads || !S.arithmetic.assignment, "Cannnot enable arithmetic assignment if arithmetic overloads are disabled");
+	static_assert(S.arithmetic.overloads || !S.arithmetic.implicit_casting, "Cannnot enable arithmetic implicit casting if arithmetic overloads are disabled");
+
+	return true;
+}
+
+
 template <class T, std::size_t N>
 struct default_storage
 {
 	T data[N];
 
-	constexpr decltype(auto) operator[](std::size_t i) noexcept
+	constexpr inline decltype(auto) operator[](std::size_t i) noexcept
 	{
 		return (data[i]);
 	}
 
-	constexpr decltype(auto) operator[](std::size_t i) const noexcept
+	constexpr inline decltype(auto) operator[](std::size_t i) const noexcept
 	{
 		return (data[i]);
 	}
 };
 static_assert(VecStorage<default_storage, float, 5>);
 
-template <VectorSettings S>
-consteval bool validate_settings()
-{
-	// static_assert(S.operator_overload == false, "Unable");
-
-	return true;
-}
-
-template <std::size_t N, VectorSettings::Simd simd, class F>
-constexpr void for_each(F&& fn)
+template <std::size_t N, SimdSettings simd, class F>
+void for_each(F&& fn)
 {
 	if constexpr (N <= simd.max_unroll)
 	{
@@ -78,7 +95,7 @@ constexpr void for_each(F&& fn)
 	{
 		if constexpr (simd.enabled)
 		{
-#pragma omp simd
+			[[omp::directive(simd)]]
 			for (std::size_t i = 0; i < N; ++i)
 			{
 				fn(i);
@@ -111,11 +128,6 @@ struct arithmetic_overloads
 	constexpr Self operator+(this const Self& self, const Other& other)
 	{
 		Self ret{};
-		/*#pragma omp simd
-				for (std::size_t i = 0; i < 4; ++i)
-				{
-					ret[i] = self[i]+other[i];
-				}*/
 		for_each<Self::size(), Self::settings.simd>([&](std::size_t i) {
 			ret[i] = self[i] + other[i];
 		});
@@ -123,6 +135,7 @@ struct arithmetic_overloads
 		return ret;
 	}
 
+	/*
 	template <class Self, class Other = Self>
 		requires(Self::settings.arithmetic.assignment) &&
 				valid_operator<Self, Other, decltype([](auto const& a, auto const& b) -> decltype(auto) { return a + b; })>
@@ -132,7 +145,7 @@ struct arithmetic_overloads
 			self[i] = self[i] + other[i];
 		});
 		return self;
-	}
+	}*/
 };
 } // details
 
@@ -140,13 +153,17 @@ template <
 	class T,
 	std::size_t N,
 	template <class, std::size_t> class S = details::default_storage,
-	VectorSettings Settings = VectorSettings{}>
+	VectorSettings Settings = VectorSettings{},
+	auto OptSettings = SettingsRegistry<SettingsField<"default", SimdSettings{}>>{}>
 	requires VecStorage<S, T, N> &&
-				 (details::validate_settings<Settings>())
-class Vector : public S<T, N>,
-			   public std::conditional_t<Settings.arithmetic.enabled, details::arithmetic_overloads, details::empty_t>
+			 (details::validate_settings<Settings>())
+class Vector : public std::conditional_t<Settings.extend_storage, S<T, N>, details::empty_t>
+//,
+// public std::conditional_t<Settings.arithmetic.enabled, details::arithmetic_overloads, details::empty_t>
 
 {
+	[[no_unique_address]]
+	std::conditional_t<!Settings.extend_storage, S<T, N>, details::empty_t> m_storage;
 public:
 	using base_type = T;
 	constexpr inline static VectorSettings settings = Settings;
@@ -160,18 +177,31 @@ public:
 
 	constexpr decltype(auto) operator[](this Vector const& self, std::size_t i) noexcept
 	{
-		return self.Storage::operator[](i);
+		if constexpr (Settings.extend_storage)
+		{
+			return self.Storage::operator[](i);
+		}
+		else {
+			return self.m_storage[i];
+		}
 	}
 
 	constexpr decltype(auto) operator[](this Vector& self, std::size_t i) noexcept
 	{
-		return self.Storage::operator[](i);
+		if constexpr (Settings.extend_storage)
+		{
+			return self.Storage::operator[](i);
+		}
+		else {
+			return self.m_storage[i];
+		}
 	}
 
 	friend std::ostream& operator<<(std::ostream& s, const Vector& self)
 	{
+		static constexpr auto settings = OptSettings.template get<"operator<<(std::ostream& s, const Vector& self)">();
 		s << '(';
-		details::for_each<N, settings.simd>([&](std::size_t i) {
+		details::for_each<N, settings>([&](std::size_t i) {
 			if (i != 0)
 				s << ", ";
 			s << self[i];
@@ -181,6 +211,7 @@ public:
 		return s;
 	}
 
+	/*
 	template <class R, template <class, std::size_t> class _S = S, VectorSettings _Settings = Settings>
 	constexpr decltype(auto) map(this const Vector& self, std::move_only_function<R(const T&)>&& fn)
 	{
@@ -247,7 +278,9 @@ public:
 	constexpr Vector& operator=(this Vector& self, const Vector& other)
 		requires std::copyable<T>
 	{
-		details::for_each<N, settings.simd>([&](std::size_t i) {
+		details::for_each<N, VectorSettings::Simd{
+			.enabled = true,
+		}>([&](std::size_t i) {
 			self[i] = other[i];
 		});
 		return self;
@@ -256,6 +289,7 @@ public:
 	constexpr ~Vector()
 	{
 	}
+	*/
 	// }}}
 }; // Vector
 
