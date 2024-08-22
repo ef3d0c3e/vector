@@ -1,6 +1,7 @@
 #ifndef VECTOR_HPP
 #define VECTOR_HPP
 
+#include <array>
 #include <concepts>
 #include <format>
 #include <initializer_list>
@@ -8,7 +9,6 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
-#include <array>
 #include <variant>
 
 #include <iostream>
@@ -39,14 +39,14 @@ struct Arithmetic {
     /// `Vec<T>·Vec<U>` will either be a `Vec<T>` or a `Vec<U>` (where `·` is an operator).
     /// The resulting vector's type is determined by the result of `T·U`. In cases where `T·U`
     /// yields neither a `T` nor a `U`, the operation will not compile. For instance:
-	/// @code
-	/// Vec<int, 3> u{1, 2, 3};
-	/// Vec<float, 3> v{0.5, 0.1, 0.2};
-	/// auto y1 = u + v;
-	/// auto y2 = v + u;
-	/// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
-	/// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
-	/// @endcode
+    /// @code
+    /// Vec<int, 3> u{1, 2, 3};
+    /// Vec<float, 3> v{0.5, 0.1, 0.2};
+    /// auto y1 = u + v;
+    /// auto y2 = v + u;
+    /// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
+    /// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
+    /// @endcode
     bool overloads = true;
 
     /// Overload assignment operators (+=, /=, etc.)
@@ -55,27 +55,27 @@ struct Arithmetic {
     /// Enables operations with scalar (e.g. vec*3.5 or vec+1.0)
     ///
     /// @note When `implicit_casting` is enabled, the result of `Vec<T>·U` will be the result of
-	/// `T·U` casted to `T` if necessary (where `·` is an operator). For instance:
-	/// @code
-	/// Vec<int, 3> v{1, 2, 3};
-	/// v *= 1.5;
-	/// assert(v == Vec<int, 3>{1, 3, 4});
-	/// @endcode
+    /// `T·U` casted to `T` if necessary (where `·` is an operator). For instance:
+    /// @code
+    /// Vec<int, 3> v{1, 2, 3};
+    /// v *= 1.5;
+    /// assert(v == Vec<int, 3>{1, 3, 4});
+    /// @endcode
     bool scalar_operations = true;
 
     /// Allows implicit type casting for arithmetic operations. Generally `Vector<float> +
-	/// Vector<int>` is ill formed. Enabling this setting will allow arithmetic operations for
-	/// vectors of differnt types.
-	///
-	/// For instance:
-	/// @code
-	/// Vec<int, 3> u{1, 2, 3};
-	/// Vec<float, 3> v{0.5, 1.4, 0.2};
-	/// auto y1 = u.clone().add(v); // requires implicit_casting, because `int+float` -> float
-	/// auto y2 = v.clone().add(u); // ok because `float+int` -> float
-	/// assert(y1 == Vec<int, 3>{1, 3, 3});
-	/// assert(y2 == Vec<float, 3>{1.5, 3.4, 3.2});
-	/// @endcode
+    /// Vector<int>` is ill formed. Enabling this setting will allow arithmetic operations for
+    /// vectors of differnt types.
+    ///
+    /// For instance:
+    /// @code
+    /// Vec<int, 3> u{1, 2, 3};
+    /// Vec<float, 3> v{0.5, 1.4, 0.2};
+    /// auto y1 = u.clone().add(v); // requires implicit_casting, because `int+float` -> float
+    /// auto y2 = v.clone().add(u); // ok because `float+int` -> float
+    /// assert(y1 == Vec<int, 3>{1, 3, 3});
+    /// assert(y2 == Vec<float, 3>{1.5, 3.4, 3.2});
+    /// @endcode
     bool implicit_casting = false;
 };
 
@@ -90,10 +90,16 @@ struct Formatting {
 /// @brief Controls which tuple-like options are enabled
 struct Tuple {
     /// Specializes `std::tuple_size` for Vector
-    bool tuple_size = true;
+    bool size = true;
 
     /// Specializes `std::tuple_element` for Vector
-    bool tuple_element = true;
+    bool element = true;
+
+    /// Specializes std::get for Vector
+    ///
+    /// @note If the container is stored as a member, or does not specializes `std::get`, turning
+    /// this on enables structured-bindings.
+    bool get = true;
 };
 
 /// @brief Controls which features are enabled for Vector
@@ -121,7 +127,7 @@ struct VectorFeatures {
     /// assert(v.y == 7.8); // extend_storage is on
     /// assert(v[2] == 0.5);
     /// @endcode
-    bool extend_storage = true;
+    bool extend_storage = false;
 };
 
 namespace details {
@@ -161,13 +167,13 @@ template <std::size_t N, SimdSettings simd, class F> void for_each(F &&fn) {
             fn(i);
         }
     } else {
-        for (std::size_t i = 0; i < N; ++i) {
+        for (const auto i : std::ranges::iota_view{0uz, N}) {
             fn(i);
         }
     }
 }
 
-/// @brief Concept for an operator yielding `a.b -> decltype(a)`
+/// @brief Concept for an operator yielding `a·b -> decltype(a)`
 template <class Left, class Right, class Op>
 concept binary_operator_l = requires(const Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
@@ -175,7 +181,7 @@ concept binary_operator_l = requires(const Left &l, const Right &r, std::size_t 
     { Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Left::base_type>;
 };
 
-/// @brief Concept for an operator yielding `a.b -> decltype(b)`
+/// @brief Concept for an operator yielding `a·b -> decltype(b)`
 template <class Left, class Right, class Op>
 concept binary_operator_r = requires(const Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
@@ -183,7 +189,7 @@ concept binary_operator_r = requires(const Left &l, const Right &r, std::size_t 
     { Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Right::base_type>;
 };
 
-/// @brief Concept for an operator yielding `vec.a` -> decltype(vec)
+/// @brief Concept for an operator yielding `vec·a` -> decltype(vec)
 /// @tparam implicit_casting Whether to allow implicit casting, e.g. `vec<int>[..] + float` yields
 /// a float, but can be implicitly casted to an int
 template <class Vec, class T, class Op, bool implicit_casting>
@@ -204,6 +210,7 @@ concept binary_operator_scalar_l = requires(const Vec &vec, const T &scalar, std
     } -> std::same_as<std::true_type>;
 };
 
+/// @brief Concept for an assign operator yielding `a·b` -> `&decltype(a)`
 template <class Left, class Right, class AssignOp>
 concept assign_operator = requires(Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
@@ -213,6 +220,7 @@ concept assign_operator = requires(Left &l, const Right &r, std::size_t i) {
     } -> std::same_as<std::add_lvalue_reference_t<typename Left::base_type>>;
 };
 
+/// @brief Concept for an assign operator yielding `vec·a` -> `&decltype(vec)`
 template <class Vec, class T, class AssignOp, bool implicit_casting>
 concept assign_operator_scalar = requires(Vec &vec, const T &scalar, std::size_t i) {
     typename Vec::base_type;
@@ -371,9 +379,9 @@ struct arithmetic_assignment_overloads {
 /// @tparam N The number of elements
 /// @tparam S The storage type, must verify details::vec_storage. Defaults to `std::array`
 /// @tparam _Features The vector's features, see VectorFeatures
-/// @tparam _SimdSettings Dispatch policies for details::for_each, see vector::SettingsRegistry< SettingsField< Names, Settings >... >
-template <class T, std::size_t N,
-          template <class, std::size_t> class S = std::array,
+/// @tparam _SimdSettings Dispatch policies for details::for_each, see vector::SettingsRegistry<
+/// SettingsField< Names, Settings >... >
+template <class T, std::size_t N, template <class, std::size_t> class S = std::array,
           VectorFeatures _Features = VectorFeatures{},
           auto _SimdSettings = SettingsRegistry<SettingsField<"default", SimdSettings{}>>{}>
     requires vec_storage<S, T, N> && (details::validate_features<_Features>())
@@ -388,13 +396,13 @@ struct Vector
     [[no_unique_address]]
     std::conditional_t<!_Features.extend_storage, S<T, N>, std::monostate> _storage;
 
-	/// The vector's SimdSettings i.e. template parameter `_SimdSettings`
+    /// The vector's SimdSettings i.e. template parameter `_SimdSettings`
     constexpr inline static auto SimdSettings = _SimdSettings;
-	/// The vector's VectorFeatures i.e. template parameter `_Features`
+    /// The vector's VectorFeatures i.e. template parameter `_Features`
     constexpr inline static VectorFeatures Features = _Features;
-	/// The vector's base type i.e. template parameter `T`
+    /// The vector's base type i.e. template parameter `T`
     using base_type = T;
-	/// The vector's storage type i.e. template parameter `S`
+    /// The vector's storage type i.e. template parameter `S`
     using Storage = S<T, N>;
 
     /// @brief Gets the vector's size i.e. template parameter `N`
@@ -402,12 +410,12 @@ struct Vector
     /// @return The number of elements
     consteval static std::size_t size() noexcept { return N; }
 
-	/// @brief Subscript operator
-	///
-	/// @param self A (const) lvalue reference to Vetor
-	/// @param i Index of the element
-	///
-	/// @returns The value at index @p i in @p self
+    /// @brief Subscript operator
+    ///
+    /// @param self A (const) lvalue reference to Vetor
+    /// @param i Index of the element
+    ///
+    /// @returns The value at index @p i in @p self
     constexpr decltype(auto) operator[](this auto &&self, std::size_t i) noexcept {
         if constexpr (Features.extend_storage) {
             return self.Storage::operator[](i);
@@ -494,17 +502,27 @@ struct Vector
         return self;
     }
 
+	/// @brief Clones the vector
+	///
+	/// Clones the underlying container or creates a new container, copying each values
+	///
+	/// @pram self Vector to clone
+	constexpr Vector clone(this Vector& self) {
+
+	}
+
     constexpr ~Vector() {}
     // }}}
 }; // Vector
 } // namespace vector
 
+namespace std {
 /// @brief `std::formatter` specialization for Vector
 template <class T, std::size_t N, template <class, std::size_t> class S,
-          vector::VectorFeatures Features, auto SimdSettings>
-    requires vector::vec_storage<S, T, N> && (vector::details::validate_features<Features>()) &&
-             (Features.formatting.format)
-struct std::formatter<vector::Vector<T, N, S, Features, SimdSettings>, char> {
+          ::vector::VectorFeatures Features, auto SimdSettings>
+    requires ::vector::vec_storage<S, T, N> &&
+             (::vector::details::validate_features<Features>()) && (Features.formatting.format)
+struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char> {
 
     std::formatter<T, char> element_formatter;
 
@@ -527,5 +545,44 @@ struct std::formatter<vector::Vector<T, N, S, Features, SimdSettings>, char> {
         return out;
     }
 };
+
+// @brief `std::tuple_size` specialization for Vector
+template <class T, std::size_t N, template <class, std::size_t> class S,
+          ::vector::VectorFeatures Features, auto SimdSettings>
+    requires ::vector::vec_storage<S, T, N> &&
+             (::vector::details::validate_features<Features>()) && (Features.tuple.size)
+struct tuple_size<::vector::Vector<T, N, S, Features, SimdSettings>>
+    : std::integral_constant<std::size_t, N> {};
+
+// @brief `std::tuple_element` specialization for Vector
+template <std::size_t I, class T, std::size_t N, template <class, std::size_t> class S,
+          ::vector::VectorFeatures Features, auto SimdSettings>
+    requires ::vector::vec_storage<S, T, N> &&
+             (::vector::details::validate_features<Features>()) && (Features.tuple.element)
+struct tuple_element<I, ::vector::Vector<T, N, S, Features, SimdSettings>> {
+    using type = T;
+};
+
+// @brief `std::get` specialization for Vector
+// @relates std::formatter
+template <std::size_t I, class T, std::size_t N, template <class, std::size_t> class S,
+          ::vector::VectorFeatures Features, auto SimdSettings>
+    requires ::vector::vec_storage<S, T, N> &&
+             (::vector::details::validate_features<Features>()) && (Features.tuple.get)
+constexpr decltype(auto)
+    get(const ::vector::Vector<T, N, S, Features, SimdSettings> &vec) noexcept {
+    return vec[I];
+}
+
+// @brief `std::get` specialization for Vector
+// @relates std::formatter
+template <std::size_t I, class T, std::size_t N, template <class, std::size_t> class S,
+          ::vector::VectorFeatures Features, auto SimdSettings>
+    requires ::vector::vec_storage<S, T, N> &&
+             (::vector::details::validate_features<Features>()) && (Features.tuple.get)
+constexpr decltype(auto) get(::vector::Vector<T, N, S, Features, SimdSettings> &vec) noexcept {
+    return vec[I];
+}
+} // namespace std
 
 #endif // VECTOR_HPP

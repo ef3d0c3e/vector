@@ -10,10 +10,22 @@ int main()
 		vector::SettingsField<"default", vector::SimdSettings::NONE>,
 		vector::SettingsField<"operator=(this Vector& self, const Vector& other)", vector::SimdSettings::NONE>
 	>;
+	/*
 	using Vec = vector::Vector<float, 16, std::array, vector::VectorFeatures{}, settings{}>;
 
 	Vec v{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};//{1,2,3, 4};
-	std::cout << std::format("{:5f}", v);
+	//std::cout << std::format("{:5f}", v);
+	
+	std::cout << std::tuple_size_v<Vec>;
+	*/
+
+	using Vec = vector::Vector<int, 3, std::array, vector::VectorFeatures{}, settings{}>;
+	const Vec u{1, 2, 3};
+
+	const auto& [x, y, z] = u;
+
+	std::cout << x << " " << y << " " << z;
+	
 
 /*
 	using clock_t = std::chrono::high_resolution_clock;
