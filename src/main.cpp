@@ -10,11 +10,10 @@ int main()
 		vector::SettingsField<"default", vector::SimdSettings::NONE>,
 		vector::SettingsField<"operator=(this Vector& self, const Vector& other)", vector::SimdSettings::NONE>
 	>;
-	using Vec = vector::Vector<int, 16, vector::details::default_storage, vector::VectorSettings{}, settings{}>;
+	using Vec = vector::Vector<float, 16, std::array, vector::VectorFeatures{}, settings{}>;
 
 	Vec v{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};//{1,2,3, 4};
-	v.add(5);
-	std::cout << v;
+	std::cout << std::format("{:5f}", v);
 
 /*
 	using clock_t = std::chrono::high_resolution_clock;

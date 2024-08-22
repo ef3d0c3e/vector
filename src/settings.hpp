@@ -7,6 +7,9 @@
 #include <tuple>
 
 namespace vector {
+/// @brief Literal string as NNTP
+///
+/// @tparam N length of string
 template <std::size_t N> struct literal {
     char data[N];
 
@@ -47,11 +50,20 @@ template <literal _key, SimdSettings _value> struct SettingsField {
     constexpr static inline SimdSettings value = _value;
 };
 
-/**
- * @brief The registry holding the custom settings for SIMD
- */
+/// @cond
 template <class...> class SettingsRegistry;
+/// @endcond
 
+/**
+ * @brief Registry holding vector::SimdSettings for the vector's dispatch policy
+ *
+ * @tparam SettingsField A (key, value) pair for the setting's name and value
+ * \code{.cpp}
+ * SettingsField<"default", SimdSettings::SIMD>, // required
+ * SettingsField<"add(this Self& self, const Other& other)", SimdSettings::UNROLL>, // unroll for add
+ * ...
+ * \endcode
+ */
 template <literal... Names, SimdSettings... Settings>
 class SettingsRegistry<SettingsField<Names, Settings>...> {
     using settings = std::tuple<SettingsField<Names, Settings>...>;

@@ -2,15 +2,17 @@
 #define VECTOR_HPP
 
 #include <concepts>
-#include <fmt/format.h>
-#include <functional>
+#include <format>
 #include <initializer_list>
 #include <ostream>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <array>
+#include <variant>
 
 #include <iostream>
+#include <sstream>
 
 #include "settings.hpp"
 
@@ -26,71 +28,133 @@ concept vec_storage = requires(S<T, N> &&s, std::size_t i) {
     { static_cast<const S<T, N> &>(s)[i] } -> std::same_as<const T &>;
 };
 
-/// Settings for the Vector class
-struct VectorSettings {
-    /// Settings the the vector's arithmetic
-    struct Arithmetic {
-        /// Enables arithmetic methods `add`, `mul`, etc.
-        bool enabled = true;
+/// @brief Controls which arithmetic options are enabled
+struct Arithmetic {
+    /// Enables arithmetic methods `add`, `mul`, etc.
+    bool enabled = true;
 
-        /// Enables operations with scalar (e.g. vec*3.5 or vec+1.0)
-        bool scalar_operations = true;
+    /// Overload operators for arithmetic methods (+, -, etc.)
+    ///
+    /// @note When `implicit_casting` is enabled, the result of
+    /// `Vec<T>·Vec<U>` will either be a `Vec<T>` or a `Vec<U>` (where `·` is an operator).
+    /// The resulting vector's type is determined by the result of `T·U`. In cases where `T·U`
+    /// yields neither a `T` nor a `U`, the operation will not compile. For instance:
+	/// @code
+	/// Vec<int, 3> u{1, 2, 3};
+	/// Vec<float, 3> v{0.5, 0.1, 0.2};
+	/// auto y1 = u + v;
+	/// auto y2 = v + u;
+	/// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
+	/// assert(v == Vec<float, 3>{1.5, 2.1, 3.2});
+	/// @endcode
+    bool overloads = true;
 
-        /// Overload operators for arithmetic methods (+, -, etc.)
-        bool overloads = true;
+    /// Overload assignment operators (+=, /=, etc.)
+    bool assignment = true;
 
-        /// Overload assignment operators (+=, /=, etc.)
-        bool assignment = true;
+    /// Enables operations with scalar (e.g. vec*3.5 or vec+1.0)
+    ///
+    /// @note When `implicit_casting` is enabled, the result of `Vec<T>·U` will be the result of
+	/// `T·U` casted to `T` if necessary (where `·` is an operator). For instance:
+	/// @code
+	/// Vec<int, 3> v{1, 2, 3};
+	/// v *= 1.5;
+	/// assert(v == Vec<int, 3>{1, 3, 4});
+	/// @endcode
+    bool scalar_operations = true;
 
-        /// Allows implicit type casting for operators
-        /// Generally `Vector<float> + Vector<int>` is ill formed
-        /// Enabling this settings will cast the result type to the type of the
-        /// lhs
-        bool implicit_casting = false;
-    } arithmetic{};
+    /// Allows implicit type casting for arithmetic operations. Generally `Vector<float> +
+	/// Vector<int>` is ill formed. Enabling this setting will allow arithmetic operations for
+	/// vectors of differnt types.
+	///
+	/// For instance:
+	/// @code
+	/// Vec<int, 3> u{1, 2, 3};
+	/// Vec<float, 3> v{0.5, 1.4, 0.2};
+	/// auto y1 = u.clone().add(v); // requires implicit_casting, because `int+float` -> float
+	/// auto y2 = v.clone().add(u); // ok because `float+int` -> float
+	/// assert(y1 == Vec<int, 3>{1, 3, 3});
+	/// assert(y2 == Vec<float, 3>{1.5, 3.4, 3.2});
+	/// @endcode
+    bool implicit_casting = false;
+};
 
-    /// Whether the vector extends it's storage class
-    /// Otherwise the storage is kept as a member
+/// @brief Controls which formatting options are enabled
+struct Formatting {
+    /// Whether to override `operator<<` for ostream
+    bool ostream = true;
+    /// Specializes `std::formatter` for Vector
+    bool format = true;
+};
+
+/// @brief Controls which tuple-like options are enabled
+struct Tuple {
+    /// Specializes `std::tuple_size` for Vector
+    bool tuple_size = true;
+
+    /// Specializes `std::tuple_element` for Vector
+    bool tuple_element = true;
+};
+
+/// @brief Controls which features are enabled for Vector
+struct VectorFeatures {
+    /// Arithmetic features
+    Arithmetic arithmetic{};
+
+    /// Formatting features
+    Formatting formatting{};
+
+    /// Tuple like features
+    Tuple tuple{};
+
+    /// Whether the vector extends it's storage class. Otherwise the storage is kept as a member
+    ///
+    /// Extending the storage class allows to directly reference the storage when given a vector:
+    /// @code{.cpp}
+    /// template <class T>
+    /// struct vec3_storage
+    /// {
+    /// 	T x, y, z;
+    /// 	...
+    /// };
+    /// Vec<float, 3, vec3_storage> v{1.4, 7.8, 0.5};
+    /// assert(v.y == 7.8); // extend_storage is on
+    /// assert(v[2] == 0.5);
+    /// @endcode
     bool extend_storage = true;
 };
 
 namespace details {
-/// Utility to validate vector settings.
+/// @brief Utility to validate vector features.
 /// Meant to be used to give an insight about incompatible settings
 ///
-/// @tparam S The settings to validate
-template <VectorSettings S> consteval bool validate_settings() {
+/// @tparam F The features to validate
+template <VectorFeatures F> consteval bool validate_features() {
     // Arithmetic
-    static_assert(S.arithmetic.enabled || !S.arithmetic.overloads,
+    static_assert(F.arithmetic.enabled || !F.arithmetic.overloads,
                   "Cannnot enable arithmetic overloads if arithmetic is disabled");
-    static_assert(S.arithmetic.enabled || !S.arithmetic.assignment,
+    static_assert(F.arithmetic.enabled || !F.arithmetic.assignment,
                   "Cannnot enable arithmetic assignment if arithmetic "
                   "overloads are disabled");
-    static_assert((S.arithmetic.overloads || S.arithmetic.assignment) ||
-                      !S.arithmetic.implicit_casting,
+    static_assert((F.arithmetic.overloads || F.arithmetic.assignment) ||
+                      !F.arithmetic.implicit_casting,
                   "Cannnot enable arithmetic implicit casting if operators "
                   "overloading is enabled");
 
     return true;
 }
 
-/// Default vector storage, an aligned `T[N]` array
-template <class T, std::size_t N> struct default_storage {
-    T data[N];
-
-    constexpr inline decltype(auto) operator[](this auto &self, std::size_t i) noexcept {
-        return (self.data[i]);
-    }
-};
-static_assert(vec_storage<default_storage, float, 5>);
-
+/// @brief Executes a callback for each elements
+///
+/// @param fn The callback to execute
+/// @tparam N The number of times to execute the callback
+/// @tparam simd The callback's execution policy, see vector::SimdSettings
+/// @tparam F The callback functor \code{.cpp}(std::size_t) -> void\endcode
 template <std::size_t N, SimdSettings simd, class F> void for_each(F &&fn) {
     if constexpr (simd == SimdSettings::UNROLL) {
-        {
-            [&]<auto... i>(std::index_sequence<i...>) {
-                ((fn(i)), ...);
-            }(std::make_index_sequence<N>{});
-        }
+        [&]<auto... i>(std::index_sequence<i...>) {
+            ((fn(i)), ...);
+        }(std::make_index_sequence<N>{});
     } else if constexpr (simd == SimdSettings::SIMD) {
         [[omp::directive(simd)]]
         for (std::size_t i = 0; i < N; ++i) {
@@ -103,6 +167,7 @@ template <std::size_t N, SimdSettings simd, class F> void for_each(F &&fn) {
     }
 }
 
+/// @brief Concept for an operator yielding `a.b -> decltype(a)`
 template <class Left, class Right, class Op>
 concept binary_operator_l = requires(const Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
@@ -110,6 +175,7 @@ concept binary_operator_l = requires(const Left &l, const Right &r, std::size_t 
     { Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Left::base_type>;
 };
 
+/// @brief Concept for an operator yielding `a.b -> decltype(b)`
 template <class Left, class Right, class Op>
 concept binary_operator_r = requires(const Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
@@ -117,6 +183,9 @@ concept binary_operator_r = requires(const Left &l, const Right &r, std::size_t 
     { Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Right::base_type>;
 };
 
+/// @brief Concept for an operator yielding `vec.a` -> decltype(vec)
+/// @tparam implicit_casting Whether to allow implicit casting, e.g. `vec<int>[..] + float` yields
+/// a float, but can be implicitly casted to an int
 template <class Vec, class T, class Op, bool implicit_casting>
 concept binary_operator_scalar_l = requires(const Vec &vec, const T &scalar, std::size_t i) {
     typename Vec::base_type;
@@ -139,12 +208,31 @@ template <class Left, class Right, class AssignOp>
 concept assign_operator = requires(Left &l, const Right &r, std::size_t i) {
     typename Left::base_type;
     typename Right::base_type;
-    { AssignOp{}.template operator()(l[i], r[i]) } -> std::same_as<std::add_lvalue_reference_t<typename Left::base_type>>;
+    {
+        AssignOp{}.template operator()(l[i], r[i])
+    } -> std::same_as<std::add_lvalue_reference_t<typename Left::base_type>>;
 };
 
-struct empty_t {};
+template <class Vec, class T, class AssignOp, bool implicit_casting>
+concept assign_operator_scalar = requires(Vec &vec, const T &scalar, std::size_t i) {
+    typename Vec::base_type;
+    {
+        [] {
+            using return_t =
+                std::remove_reference_t<decltype(AssignOp{}.template operator()(vec[i], scalar))>;
+            if constexpr (implicit_casting) {
+                return std::bool_constant <
+                               std::is_nothrow_convertible_v<return_t, typename Vec::base_type> ||
+                           std::same_as < return_t,
+                       typename Vec::base_type >> {};
+            } else {
+                return std::bool_constant<std::same_as<return_t, typename Vec::base_type>>{};
+            }
+        }()
+    } -> std::same_as<std::true_type>;
+};
 
-/// Defines the arithmetic operations
+/// @brief Defines the arithmetic operations
 struct arithmetic {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
     template <class Self, class Other = Self>                                                    \
@@ -155,21 +243,20 @@ struct arithmetic {
     constexpr Self __op_name(this Self &self, const Other &other) {                              \
         static constexpr auto settings =                                                         \
             Self::SimdSettings                                                                   \
-                .template get<#__op_name "(this const Self& self, const Other& other)">();       \
+                .template get<#__op_name "(this Self& self, const Other& other)">();             \
         for_each<Self::size(), settings>(                                                        \
             [&](std::size_t i) { self[i] = self[i] __op other[i]; });                            \
         return self;                                                                             \
     }                                                                                            \
     template <class Self, class T>                                                               \
-        requires(Self::Settings.arithmetic.scalar_operations) &&                                 \
+        requires(Self::Features.arithmetic.scalar_operations) &&                                 \
                 binary_operator_scalar_l<Self, T,                                                \
                                          decltype([](auto const &a, auto const &b)               \
                                                       -> decltype(auto) { return a __op b; }),   \
-                                         Self::Settings.arithmetic.implicit_casting>             \
+                                         Self::Features.arithmetic.implicit_casting>             \
     constexpr Self __op_name(this Self &self, const T &scalar) {                                 \
         static constexpr auto settings =                                                         \
-            Self::SimdSettings                                                                   \
-                .template get<#__op_name "(this const Self& self, const T& scalar)">();          \
+            Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();  \
         for_each<Self::size(), settings>([&](std::size_t i) { self[i] = self[i] __op scalar; }); \
         return self;                                                                             \
     }
@@ -182,6 +269,7 @@ struct arithmetic {
 #undef DEFINE_OPERATOR
 }; // arithmetic
 
+/// @brief Overloads the arithmetic operators (+, -, *, /)
 struct arithmetic_overloads {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
     template <class Self, class Other = Self>                                                    \
@@ -190,7 +278,7 @@ struct arithmetic_overloads {
         if constexpr (binary_operator_l<Self, Other, decltype([](const auto &a, const auto &b) { \
                                             return a __op b;                                     \
                                         })>) {                                                   \
-            static_assert(Self::Settings.arithmetic.implicit_casting ||                          \
+            static_assert(Self::Features.arithmetic.implicit_casting ||                          \
                           std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
             Self ret{};                                                                          \
             static constexpr auto settings =                                                     \
@@ -203,7 +291,7 @@ struct arithmetic_overloads {
                                                decltype([](const auto &a, const auto &b) {       \
                                                    return a __op b;                              \
                                                })>) {                                            \
-            static_assert(Self::Settings.arithmetic.implicit_casting ||                          \
+            static_assert(Self::Features.arithmetic.implicit_casting ||                          \
                           std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
             Other ret{};                                                                         \
             static constexpr auto settings =                                                     \
@@ -215,6 +303,20 @@ struct arithmetic_overloads {
         } else {                                                                                 \
             []<bool v = false> { static_assert(v, "Cannot define operator properly"); }();       \
         }                                                                                        \
+    }                                                                                            \
+    template <class Self, class T>                                                               \
+        requires(Self::Features.arithmetic.scalar_operations) &&                                 \
+                binary_operator_scalar_l<Self, T,                                                \
+                                         decltype([](auto const &a, auto const &b)               \
+                                                      -> decltype(auto) { return a __op b; }),   \
+                                         Self::Features.arithmetic.implicit_casting>             \
+    constexpr Self operator __op(this const Self &self, const T &scalar) {                       \
+        static constexpr auto settings =                                                         \
+            Self::SimdSettings                                                                   \
+                .template get<#__op_name "(this const Self& self, const T& scalar)">();          \
+        Self ret{};                                                                              \
+        for_each<Self::size(), settings>([&](std::size_t i) { ret[i] = self[i] __op scalar; });  \
+        return ret;                                                                              \
     }
 
     DEFINE_OPERATOR(+, add)
@@ -225,6 +327,7 @@ struct arithmetic_overloads {
 #undef DEFINE_OPERATOR
 }; // arithmetic_overloads
 
+/// @brief Overloads the arithmetic assignment operators (+=, -=, *=, /=)
 struct arithmetic_assignment_overloads {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
     template <class Self, class Other = Self>                                                    \
@@ -235,8 +338,21 @@ struct arithmetic_assignment_overloads {
     constexpr Self &operator __op(this Self & self, const Other & other) {                       \
         static constexpr auto settings =                                                         \
             Self::SimdSettings                                                                   \
-                .template get<#__op_name "(this const Self& self, const Other& other)">();       \
+                .template get<#__op_name "(this Self& self, const Other& other)">();             \
         for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op other[i]; });         \
+        return self;                                                                             \
+    }                                                                                            \
+    template <class Self, class T>                                                               \
+        requires(Self::Features.arithmetic.scalar_operations) &&                                 \
+                assign_operator_scalar<Self, T,                                                  \
+                                       decltype([](auto &a, auto const &b) -> decltype(auto) {   \
+                                           return a __op b;                                      \
+                                       }),                                                       \
+                                       Self::Features.arithmetic.implicit_casting>               \
+    constexpr Self operator __op(this Self &self, const T &scalar) {                             \
+        static constexpr auto settings =                                                         \
+            Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();  \
+        for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op scalar; });           \
         return self;                                                                             \
     }
 
@@ -249,44 +365,60 @@ struct arithmetic_assignment_overloads {
 }; // arithmetic_assignment_overloads
 } // namespace details
 
+/// @brief The vector class
+///
+/// @tparam T The vector's element type
+/// @tparam N The number of elements
+/// @tparam S The storage type, must verify details::vec_storage. Defaults to `std::array`
+/// @tparam _Features The vector's features, see VectorFeatures
+/// @tparam _SimdSettings Dispatch policies for details::for_each, see vector::SettingsRegistry< SettingsField< Names, Settings >... >
 template <class T, std::size_t N,
-          template <class, std::size_t> class S = details::default_storage,
-          VectorSettings _Settings = VectorSettings{},
+          template <class, std::size_t> class S = std::array,
+          VectorFeatures _Features = VectorFeatures{},
           auto _SimdSettings = SettingsRegistry<SettingsField<"default", SimdSettings{}>>{}>
-    requires vec_storage<S, T, N> && (details::validate_settings<_Settings>())
-class Vector
-    : public std::conditional_t<_Settings.extend_storage, S<T, N>, details::empty_t>,
-      public std::conditional_t<_Settings.arithmetic.enabled, details::arithmetic,
-                                details::empty_t>,
-      public std::conditional_t<_Settings.arithmetic.overloads, details::arithmetic_overloads,
-                                details::empty_t>,
-      public std::conditional_t<_Settings.arithmetic.assignment,
-                                details::arithmetic_assignment_overloads, details::empty_t> {
+    requires vec_storage<S, T, N> && (details::validate_features<_Features>())
+struct Vector
+    : public std::conditional_t<_Features.extend_storage, S<T, N>, std::monostate>,
+      public std::conditional_t<_Features.arithmetic.enabled, details::arithmetic,
+                                std::monostate>,
+      public std::conditional_t<_Features.arithmetic.overloads, details::arithmetic_overloads,
+                                std::monostate>,
+      public std::conditional_t<_Features.arithmetic.assignment,
+                                details::arithmetic_assignment_overloads, std::monostate> {
     [[no_unique_address]]
-    std::conditional_t<!_Settings.extend_storage, S<T, N>, details::empty_t> m_storage;
+    std::conditional_t<!_Features.extend_storage, S<T, N>, std::monostate> _storage;
 
-  public:
+	/// The vector's SimdSettings i.e. template parameter `_SimdSettings`
     constexpr inline static auto SimdSettings = _SimdSettings;
-    constexpr inline static VectorSettings Settings = _Settings;
+	/// The vector's VectorFeatures i.e. template parameter `_Features`
+    constexpr inline static VectorFeatures Features = _Features;
+	/// The vector's base type i.e. template parameter `T`
     using base_type = T;
+	/// The vector's storage type i.e. template parameter `S`
     using Storage = S<T, N>;
 
-    /**
-     * \brief Gets the vector's size
-     *
-     * \return The number of elements
-     */
+    /// @brief Gets the vector's size i.e. template parameter `N`
+    ///
+    /// @return The number of elements
     consteval static std::size_t size() noexcept { return N; }
 
+	/// @brief Subscript operator
+	///
+	/// @param self A (const) lvalue reference to Vetor
+	/// @param i Index of the element
+	///
+	/// @returns The value at index @p i in @p self
     constexpr decltype(auto) operator[](this auto &&self, std::size_t i) noexcept {
-        if constexpr (Settings.extend_storage) {
+        if constexpr (Features.extend_storage) {
             return self.Storage::operator[](i);
         } else {
-            return self.m_storage[i];
+            return self._storage[i];
         }
     }
 
-    friend std::ostream &operator<<(std::ostream &s, const Vector &self) {
+    friend std::ostream &operator<<(std::ostream &s, const Vector &self)
+        requires(Features.formatting.ostream)
+    {
         static constexpr auto settings =
             SimdSettings.template get<"operator<<(std::ostream& s, const Vector& self)">();
         s << '(';
@@ -366,5 +498,34 @@ class Vector
     // }}}
 }; // Vector
 } // namespace vector
+
+/// @brief `std::formatter` specialization for Vector
+template <class T, std::size_t N, template <class, std::size_t> class S,
+          vector::VectorFeatures Features, auto SimdSettings>
+    requires vector::vec_storage<S, T, N> && (vector::details::validate_features<Features>()) &&
+             (Features.formatting.format)
+struct std::formatter<vector::Vector<T, N, S, Features, SimdSettings>, char> {
+
+    std::formatter<T, char> element_formatter;
+
+    template <class ParseContext> constexpr ParseContext::iterator parse(ParseContext &ctx) {
+        return element_formatter.template parse(ctx);
+    }
+
+    template <class FmtContext> FmtContext::iterator format(auto &&s, FmtContext &ctx) const {
+        auto out = ctx.out();
+        *out++ = '(';
+        for (const auto i : std::ranges::iota_view{0uz, s.size()}) {
+            if (i != 0) {
+                *out++ = ',';
+                *out++ = ' ';
+            }
+            out = element_formatter.format(s[i], ctx);
+        }
+        *out++ = ')';
+
+        return out;
+    }
+};
 
 #endif // VECTOR_HPP
