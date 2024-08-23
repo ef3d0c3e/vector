@@ -6,16 +6,43 @@
 #include <format>
 #include <initializer_list>
 #include <ostream>
+#include <ranges>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
 
 #include <iostream>
 
-#include "settings.hpp"
-
 namespace vector {
+namespace details {
+/// @brief Literal string as NNTP
+///
+/// @tparam N length of string
+template<std::size_t N>
+struct literal
+{
+	char data[N];
+
+	constexpr literal(const char (&literal)[N]) { std::copy_n(literal, N, data); }
+
+	template<std::size_t M>
+	constexpr bool operator==(this const literal<N>& self, const literal<M>& other)
+	{
+		if constexpr (M != N)
+			return false;
+
+		for (const auto i : std::ranges::iota_view{ 0uz, N }) {
+			if (self.data[i] != other.data[i])
+				return false;
+		}
+
+		return true;
+	}
+};
+} // namespace details
+
 /// @brief Controls which arithmetic options are enabled
 struct Arithmetic
 {
@@ -91,7 +118,17 @@ struct Tuple
 	/// Specializes `std::get` for Vector
 	///
 	/// @note If the container is stored as a member (i.e `extend_storage` is false), or the
-	/// storge does not specializes `std::get`, turning this on enables structured-bindings.
+	/// storge does not specializes `std::get` (or is not structural), turning this on enables
+	/// structured-bindings. For instance:
+	/// @code
+	/// template <class T, std::size_t N>
+	/// struct Storage {
+	/// 	std::vector<T> data; // Not structural, no std::get specialization
+	///		...
+	/// };
+	/// Vec<int, 3, Storage> v{5, 7, 9};
+	/// const auto& [x, y, z] = v; // Features.tuple.get enabled
+	/// @endcode
 	bool get = true;
 };
 
@@ -108,12 +145,13 @@ struct VectorFeatures
 	Tuple tuple{};
 
 	/// Whether the vector extends it's storage class. Otherwise the storage is
-	/// kept as a member
+	/// kept as a member.
 	///
 	/// Extending the storage class allows to directly reference the storage when
 	/// given a vector:
 	/// @code{.cpp}
-	/// template <class T>
+	/// template <class T, size_t N>
+	/// 	requires (N == 3)
 	/// struct vec3_storage
 	/// {
 	/// 	T x, y, z;
@@ -125,14 +163,96 @@ struct VectorFeatures
 	/// @endcode
 	bool extend_storage = true;
 
-	/// Enables iterator
+	/// Enables the implicit copy constructor.
+	///
+	/// When disabled, `clone()` has to be called explicitly
+	/// @code
+	/// Vec<int, 3> u;
+	/// auto v = u; // requires copy_constructor
+	/// auto v = u.clone(); // ok
+	/// @encode
+	bool copy_constructor = true;
+
+	/// Enables iterators
 	bool iterator = true;
+};
+
+// Settings for for_each function
+enum SimdSettings
+{
+	/// Disables SIMD, will use a regular for-loop
+	NONE,
+	/// Enables SIMD via OpenMP (requires OpenMP)
+	SIMD,
+	/// Unroll loops
+	UNROLL,
+};
+
+/**
+ * @brief Represents a (key, value) pair for the settings
+ *
+ * @tparam _key The name of the settings
+ * @tparam _value The value of the settings
+ */
+template<details::literal _key, SimdSettings _value>
+struct SettingsField
+{
+	constexpr static inline details::literal key = _key;
+	constexpr static inline SimdSettings value = _value;
+};
+
+/// @cond
+template<class...>
+class SettingsRegistry;
+/// @endcond
+
+/**
+ * @brief Registry holding vector::SimdSettings for the vector's dispatch policy
+ *
+ * @tparam SettingsField A (key, value) pair for the setting's name and value
+ * \code{.cpp}
+ * SettingsField<"default", SimdSettings::SIMD>, // required
+ * SettingsField<"add(this Self& self, const Other& other)", SimdSettings::UNROLL>, // unroll for
+ * add
+ * ...
+ * \endcode
+ */
+template<details::literal... Names, SimdSettings... Settings>
+class SettingsRegistry<SettingsField<Names, Settings>...>
+{
+	using settings = std::tuple<SettingsField<Names, Settings>...>;
+
+	template<std::size_t I, details::literal key>
+	static consteval decltype(auto) get_impl()
+	{
+		using elem = std::tuple_element_t<I, settings>;
+		if constexpr (elem::key == key) {
+			return (elem::value);
+		} else if constexpr (I + 1 < std::tuple_size_v<settings>) {
+			return get_impl<I + 1, key>();
+		} else {
+			if constexpr (key == details::literal<8>{ "default" }) {
+				// No default key
+				[]<bool v = true>() { static_assert(v, "No default key for settings"); }();
+			} else {
+				// Get default key if not found for current key
+				return get_impl<0, "default">();
+			}
+		}
+	}
+
+	public:
+	template<details::literal key>
+	static consteval decltype(auto) get()
+	{
+		return get_impl<0, key>();
+	}
 };
 
 namespace details {
 template<class T>
 /// @brief Concept for a Vector class
-concept is_vector = requires {
+concept vector_type = requires {
 	typename T::base_type;
 	typename T::Storage;
 	{ T::size() } -> std::same_as<std::size_t>;
@@ -141,7 +261,8 @@ concept is_vector = requires {
 /// @brief Storage for the vector class
 ///
 /// The storage is an aligned memory region that supports the subscript operator
-/// `storage[i]`
+/// `storage[i]`. In addition, the storage must be default-constructible and move-constructible
+///
 template<template<class, std::size_t> class S, class T, std::size_t N>
 concept vec_storage = requires(S<T, N>&& s, std::size_t i) {
 	requires(sizeof(S<T, N>) == sizeof(T) * N);
@@ -150,6 +271,7 @@ concept vec_storage = requires(S<T, N>&& s, std::size_t i) {
 	{ S<T, N>{} } -> std::same_as<S<T, N>>;
 	// Moveable
 	{ S<T, N>{ std::move(s) } } -> std::same_as<S<T, N>>;
+	// Subscript operator
 	{ static_cast<S<T, N>&>(s)[i] } -> std::same_as<T&>;
 	{ static_cast<const S<T, N>&>(s)[i] } -> std::same_as<const T&>;
 };
@@ -205,8 +327,8 @@ for_each(F&& fn)
 /// @brief Concept for an operator yielding `a·b -> decltype(a)`
 template<class Left, class Right, class Op, bool implicit_casting>
 concept binary_operator_l = requires(const Left& l, const Right& r, std::size_t i) {
-	requires is_vector<Left>;
-	requires is_vector<Right>;
+	requires vector_type<Left>;
+	requires vector_type<Right>;
 	{
 		[] {
 			using return_t = decltype(Op{}.template operator()(l[i], r[i]));
@@ -225,8 +347,8 @@ concept binary_operator_l = requires(const Left& l, const Right& r, std::size_t 
 /// @brief Concept for an operator yielding `a·b -> decltype(b)`
 template<class Left, class Right, class Op, bool implicit_casting>
 concept binary_operator_r = requires(const Left& l, const Right& r, std::size_t i) {
-	requires is_vector<Left>;
-	requires is_vector<Right>;
+	requires vector_type<Left>;
+	requires vector_type<Right>;
 	{
 		[] {
 			using return_t = decltype(Op{}.template operator()(l[i], r[i]));
@@ -247,7 +369,7 @@ concept binary_operator_r = requires(const Left& l, const Right& r, std::size_t 
 /// `vec<int>[..] + float` yields a float, but can be implicitly casted to an int
 template<class Vec, class T, class Op, bool implicit_casting>
 concept binary_operator_scalar_l = requires(const Vec& vec, const T& scalar, std::size_t i) {
-	requires is_vector<Vec>;
+	requires vector_type<Vec>;
 	requires(std::is_nothrow_convertible_v<typename Vec::base_type, T>);
 	{
 		[] {
@@ -267,8 +389,8 @@ concept binary_operator_scalar_l = requires(const Vec& vec, const T& scalar, std
 /// @brief Concept for an assign operator yielding `a·b` -> `&decltype(a)`
 template<class Left, class Right, class AssignOp>
 concept assign_operator = requires(Left& l, const Right& r, std::size_t i) {
-	requires is_vector<Left>;
-	requires is_vector<Right>;
+	requires vector_type<Left>;
+	requires vector_type<Right>;
 	typename Right::base_type;
 	{
 		AssignOp{}.template operator()(l[i], r[i])
@@ -278,7 +400,7 @@ concept assign_operator = requires(Left& l, const Right& r, std::size_t i) {
 /// @brief Concept for an assign operator yielding `vec·a` -> `&decltype(vec)`
 template<class Vec, class T, class AssignOp, bool implicit_casting>
 concept assign_operator_scalar = requires(Vec& vec, const T& scalar, std::size_t i) {
-	requires is_vector<Vec>;
+	requires vector_type<Vec>;
 	requires(std::is_nothrow_convertible_v<typename Vec::base_type, T>);
 	{
 		[] {
@@ -301,7 +423,8 @@ struct arithmetic
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size()) &&    \
+	    requires(vector_type<Self>) && (vector_type<Other>) &&                                   \
+	            (Self::size() == Other::size()) &&                                               \
 	            binary_operator_l<Self,                                                          \
 	                              Other,                                                         \
 	                              decltype([](auto const& a, auto const& b) -> decltype(auto) {  \
@@ -317,8 +440,8 @@ struct arithmetic
 		return std::move(self);                                                                  \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
-	            (!is_vector<T>) &&                                                               \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
+	            (!vector_type<T>) &&                                                             \
 	            binary_operator_scalar_l<Self,                                                   \
 	                                     T,                                                      \
 	                                     decltype([](auto const& a, auto const& b)               \
@@ -345,7 +468,7 @@ struct arithmetic_overloads
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size())       \
+	    requires(vector_type<Self>) && (vector_type<Other>) && (Self::size() == Other::size())   \
 	constexpr decltype(auto) operator __op(this const Self& self, const Other& other)            \
 	{                                                                                            \
 		if constexpr (binary_operator_l<Self,                                                    \
@@ -383,8 +506,8 @@ struct arithmetic_overloads
 		}                                                                                        \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
-	            (!is_vector<T>) &&                                                               \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
+	            (!vector_type<T>) &&                                                             \
 	            binary_operator_scalar_l<Self,                                                   \
 	                                     T,                                                      \
 	                                     decltype([](auto const& a, auto const& b)               \
@@ -413,7 +536,8 @@ struct arithmetic_assignment_overloads
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size()) &&    \
+	    requires(vector_type<Self>) && (vector_type<Other>) &&                                   \
+	            (Self::size() == Other::size()) &&                                               \
 	            assign_operator<Self,                                                            \
 	                            Other,                                                           \
 	                            decltype([](auto& a, auto const& b) -> decltype(auto) {          \
@@ -427,8 +551,8 @@ struct arithmetic_assignment_overloads
 		return self;                                                                             \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
-	            (!is_vector<T>) &&                                                               \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
+	            (!vector_type<T>) &&                                                             \
 	            assign_operator_scalar<Self,                                                     \
 	                                   T,                                                        \
 	                                   decltype([](auto& a, auto const& b) -> decltype(auto) {   \
@@ -475,6 +599,7 @@ struct Vector
                               details::arithmetic_assignment_overloads,
                               std::monostate>
 {
+	/// Stored data if `extend_storage` is disabled
 	[[no_unique_address]]
 	std::conditional_t<!_Features.extend_storage, S<T, N>, std::monostate> _storage;
 
@@ -558,25 +683,13 @@ struct Vector
 	{
 	}
 
-	/// @brief Copy constructor for non-extended storage that implements copy
-	///
-	/// This is called if the storage is not extended (i.e. `extend_storage` is disabled) and the
-	/// storage has a copy constructor
-	constexpr Vector(const Vector& other)
-	    requires(!Features.extend_storage) && std::copyable<Storage>
-	  : _storage{ other._storage }
-	{
-		if (this == &other) [[unlikely]] {
-			throw std::invalid_argument("Attempted to assign to self");
-		}
-	}
-
-	/// @brief Copy constructor for extended storage that implements copy
+	/// @brief Copy constructor (for extended storage)
+	/// @param other Vector to copy
 	///
 	/// This is called if the storage is extended (i.e. `extend_storage` is enabled) and the
-	/// storage has a copy constructor
+	/// storage is copyable
 	constexpr Vector(const Vector& other)
-	    requires(Features.extend_storage) && std::copyable<Storage>
+	    requires(Features.copy_constructor) && (Features.extend_storage) && std::copyable<Storage>
 	  : Storage{ other }
 	{
 		if (this == &other) [[unlikely]] {
@@ -584,32 +697,54 @@ struct Vector
 		}
 	}
 
-	/// @brief Copy constructor for non-copyable storage that have copyable element
+	/// @brief Copy constructor (for non extended storage)
+	/// @param other Vector to copy
+	///
+	/// This is called if the storage is not extended (i.e. `extend_storage` is disabled) and the
+	/// storage is copyable.
 	constexpr Vector(const Vector& other)
-	    requires std::copyable<T> && (!std::copyable<Storage>)
-	{
-		if (this == &other) [[unlikely]] {
-			throw std::invalid_argument("Attempted to assign to self");
-		}
-
-		static constexpr auto settings =
-		  SimdSettings.template get<"Vector(const Vector& other)">();
-		details::for_each<N, settings>(
-		  [&, this](std::size_t i) { this->operator[](i) = other[i]; });
-	}
-
-	constexpr Vector(Vector&& other)
-	    requires(Features.extend_storage) && std::is_move_assignable_v<Storage>
-
-	  : Storage{ std::move(static_cast<Storage&>(other)) }
+	    requires(Features.copy_constructor) &&
+	            (!Features.extend_storage) && std::copyable<Storage>
+	  : _storage{ other._storage }
 	{
 		if (this == &other) [[unlikely]] {
 			throw std::invalid_argument("Attempted to assign to self");
 		}
 	}
 
+	/// @brief Copy constructor (element-wise copy)
+	/// @param other Vector to copy
+	///
+	/// This is called if the storage is not copyable but the stored elements are copyable.
+	///
+	/// @note This methods requires the default constructor, so it may be more expensive than
+	/// other copy constructors.
+	constexpr Vector(const Vector& other)
+	    requires(Features.copy_constructor) && (!std::copyable<Storage>) && std::copyable<T>
+	{
+		if (this == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+
+		*this = other;
+	}
+
+	/// @brief Move constructor (for extended storage)
+	/// @param other Vector to move int self
 	constexpr Vector(Vector&& other)
-	    requires(!Features.extend_storage) && std::is_move_assignable_v<Storage>
+	    requires(Features.extend_storage) && std::movable<Storage>
+
+	  : Storage{ std::move(static_cast<Storage&&>(other)) }
+	{
+		if (this == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+	}
+
+	/// @brief Move constructor (for non extended storage)
+	/// @param other Vector to move int self
+	constexpr Vector(Vector&& other)
+	    requires(!Features.extend_storage) && std::movable<Storage>
 
 	  : _storage{ std::move(other._storage) }
 	{
@@ -618,6 +753,27 @@ struct Vector
 		}
 	}
 
+	/// @brief Storage constructor (for non extended storage)
+	/// @param storage Storage to move into self
+	constexpr Vector(Storage&& storage)
+	    requires(!Features.extend_storage) && std::movable<Storage>
+	  : _storage{ std::move(storage) }
+
+	{
+	}
+
+	/// @brief Storage constructor (for extended storage)
+	/// @param storage Storage to move into self
+	constexpr Vector(Storage&& storage)
+	    requires(Features.extend_storage) && std::movable<Storage>
+	  : Storage{ std::move(storage) }
+
+	{
+	}
+
+	/// @brief Initializer list constructor
+	///
+	/// @note Will throw if the initializer_list's size if different from Vector::size()
 	constexpr Vector(std::initializer_list<T>&& list)
 	{
 		if (list.size() != size()) [[unlikely]] {
@@ -631,9 +787,12 @@ struct Vector
 		  [&, this](std::size_t i) { this->operator[](i) = *(it++); });
 	}
 
+	/// @brief Copy assignment
+	/// @param other Vector to copy element-wise into self
 	constexpr Vector& operator=(this Vector& self, const Vector& other)
 	    requires std::copyable<T>
 	{
+		std::cout << "= called" << std::endl;
 		if (&self == &other) [[unlikely]] {
 			throw std::invalid_argument("Attempted to assign to self");
 		}
@@ -645,6 +804,7 @@ struct Vector
 	}
 
 	/// @brief Move assignment
+	/// @param other Vector to move into self
 	constexpr Vector& operator=(this Vector& self, Vector&& other)
 	    requires std::is_move_assignable_v<Storage>
 	{
@@ -663,27 +823,53 @@ struct Vector
 
 	/// @brief Clones the vector
 	///
-	/// Clones the vector by calling the copy construcument 1 of ‘constexpr Self&
-	/// vector::details::arithmetic::add(this Self&, const Other&) [wtor
+	/// Clones the vector by either cloning it's storage,
+	/// or by default-initializing the vector and copying element-wise
 	///
 	/// @pram self Vector to clone
-	constexpr Vector clone(this const Vector& self) { return Vector{ self }; }
+	constexpr Vector clone(this const Vector& self)
+	{
+		// Copy storage
+		if constexpr (!Features.extend_storage && std::copyable<Storage>) {
+			return Vector{ ._storage = self._storage };
+		} else if constexpr (Features.extend_storage && std::copyable<Storage>) {
+			auto copy = static_cast<Storage>(self);
+			return static_cast<Vector>(std::move(copy));
+		}
+		// Copy element-wise (more expensive since it requires the default constructor)
+		else if constexpr (std::copyable<T>) {
+			auto ret = Vector{};
 
+			ret = self;
+			return ret;
+		} else {
+			[]<bool v = false> {
+				static_assert(v,
+				              "Cannot clone(), T is not copyable or the Storage is not copyable");
+			}();
+		}
+	}
+
+	/// @brief Destructor
 	constexpr ~Vector() {}
 	// }}}
 }; // Vector
 } // namespace vector
 
-/// Specialization of std's functionnalities for Vector
+/// Specialization of std's functionnalities for vector::Vector
 namespace std {
-/// @brief `std::formatter` specialization for Vector
+/// @brief `std::formatter` specialization for link vector::Vector
+/// @related vector::Vector
+///
+/// @tparam T Formatted element.
+/// The format string is parsed using \p T's `std::formatter`.
 template<class T,
          std::size_t N,
          template<class, std::size_t>
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.formatting.format)
 struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char>
 {
@@ -714,20 +900,22 @@ struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char>
 	}
 };
 
-// @brief `std::tuple_size` specialization for Vector
+/// @brief `std::tuple_size` specialization for vector::Vector
+/// @related vector::Vector
 template<class T,
          std::size_t N,
          template<class, std::size_t>
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.tuple.size)
 struct tuple_size<::vector::Vector<T, N, S, Features, SimdSettings>>
   : std::integral_constant<std::size_t, N>
 {};
 
-// @brief `std::tuple_element` specialization for Vector
+/// @brief `std::tuple_element` specialization for vector::Vector
+/// @related vector::Vector
 template<std::size_t I,
          class T,
          std::size_t N,
@@ -735,14 +923,15 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.tuple.element)
 struct tuple_element<I, ::vector::Vector<T, N, S, Features, SimdSettings>>
 {
 	using type = T;
 };
 
-// @brief `std::get` specialization for Vector
+/// @brief `std::get` specialization for vector::Vector
+/// @related vector::Vector
 template<std::size_t I,
          class T,
          std::size_t N,
@@ -750,7 +939,7 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.tuple.get)
 constexpr decltype(auto)
   get(const ::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
@@ -758,7 +947,8 @@ constexpr decltype(auto)
 	return vec[I];
 }
 
-// @brief `std::get` specialization for Vector
+/// @brief `std::get` specialization for vector::Vector
+/// @related vector::Vector
 template<std::size_t I,
          class T,
          std::size_t N,
@@ -766,7 +956,7 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.tuple.get)
 constexpr decltype(auto) get(::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
 {
