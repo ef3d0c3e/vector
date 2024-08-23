@@ -5,6 +5,7 @@
 #include <concepts>
 #include <format>
 #include <initializer_list>
+#include <iterator>
 #include <ostream>
 #include <ranges>
 #include <stdexcept>
@@ -132,6 +133,15 @@ struct Tuple
 	bool get = true;
 };
 
+/// @brief Controls the iterators settings
+struct Iterators
+{
+	bool enabled = true;
+
+	/// Uses the storage's iterator when available
+	bool use_storage = false;
+};
+
 /// @brief Controls which features are enabled for Vector
 struct VectorFeatures
 {
@@ -143,6 +153,9 @@ struct VectorFeatures
 
 	/// Tuple like features
 	Tuple tuple{};
+
+	/// Iterators settings
+	Iterators iterators{};
 
 	/// Whether the vector extends it's storage class. Otherwise the storage is
 	/// kept as a member.
@@ -170,11 +183,10 @@ struct VectorFeatures
 	/// Vec<int, 3> u;
 	/// auto v = u; // requires copy_constructor
 	/// auto v = u.clone(); // ok
-	/// @encode
+	/// Vec<int, 3> v;
+	/// v = u; // ok, element-wise copy
+	/// @endcode
 	bool copy_constructor = true;
-
-	/// Enables iterators
-	bool iterator = true;
 };
 
 // Settings for for_each function
@@ -294,6 +306,9 @@ validate_features()
 	                !F.arithmetic.implicit_casting,
 	              "Cannnot enable arithmetic implicit casting if operators "
 	              "overloading is enabled");
+
+	static_assert(F.iterators.enabled || !F.iterators.use_storage,
+	              "Can't use storage iterators if iterators are disabled");
 
 	return true;
 }
@@ -418,8 +433,17 @@ concept assign_operator_scalar = requires(Vec& vec, const T& scalar, std::size_t
 	} -> std::same_as<std::true_type>;
 };
 
+/// @cond
+template<bool>
+struct arithmetic;
+template<>
+struct arithmetic<false>
+{};
+/// @endcond
+
 /// @brief Defines the arithmetic operations
-struct arithmetic
+template<>
+struct arithmetic<true>
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
@@ -463,8 +487,17 @@ struct arithmetic
 #undef DEFINE_OPERATOR
 }; // arithmetic
 
+/// @cond
+template<bool>
+struct arithmetic_overloads;
+template<>
+struct arithmetic_overloads<false>
+{};
+/// @endcond
+
 /// @brief Overloads the arithmetic operators (+, -, *, /)
-struct arithmetic_overloads
+template<>
+struct arithmetic_overloads<true>
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
@@ -531,8 +564,17 @@ struct arithmetic_overloads
 #undef DEFINE_OPERATOR
 }; // arithmetic_overloads
 
+/// @cond
+template<bool>
+struct arithmetic_assignment_overloads;
+template<>
+struct arithmetic_assignment_overloads<false>
+{};
+/// @endcond
+
 /// @brief Overloads the arithmetic assignment operators (+=, -=, *=, /=)
-struct arithmetic_assignment_overloads
+template<>
+struct arithmetic_assignment_overloads<true>
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
@@ -592,12 +634,9 @@ template<class T,
     requires details::vec_storage<S, T, N> && (details::validate_features<_Features>())
 struct Vector
   : public std::conditional_t<_Features.extend_storage, S<T, N>, std::monostate>
-  , public std::conditional_t<_Features.arithmetic.enabled, details::arithmetic, std::monostate>
-  , public std::
-      conditional_t<_Features.arithmetic.overloads, details::arithmetic_overloads, std::monostate>
-  , public std::conditional_t<_Features.arithmetic.assignment,
-                              details::arithmetic_assignment_overloads,
-                              std::monostate>
+  , public details::arithmetic<_Features.arithmetic.enabled>
+  , public details::arithmetic_overloads<_Features.arithmetic.overloads>
+  , public details::arithmetic_assignment_overloads<_Features.arithmetic.assignment>
 {
 	/// Stored data if `extend_storage` is disabled
 	[[no_unique_address]]
@@ -611,7 +650,24 @@ struct Vector
 	using base_type = T;
 	/// The vector's storage type i.e. template parameter `S`
 	using Storage = S<T, N>;
-
+	/// The iterator type
+	using iterator =
+	  std::conditional_t<Features.iterators.enabled,
+	                     std::conditional_t<Features.iterators.use_storage,
+	                                        std::remove_cvref_t<decltype(std::begin(Storage()))>,
+	                                        T*>,
+	                     std::monostate>;
+	using const_iterator =
+	  std::conditional_t<Features.iterators.enabled,
+	                     std::conditional_t<Features.iterators.use_storage,
+	                                        std::remove_cvref_t<decltype(std::cbegin(Storage()))>,
+	                                        const T*>,
+	                     std::monostate>;
+	using reverse_iterator = std::
+	  conditional_t<Features.iterators.enabled, std::reverse_iterator<iterator>, std::monostate>;
+	using constreverse_iterator = std::conditional_t<Features.iterators.enabled,
+	                                                 std::reverse_iterator<const_iterator>,
+	                                                 std::monostate>;
 	/// @brief Gets the vector's size i.e. template parameter `N`
 	///
 	/// @return The number of elements
