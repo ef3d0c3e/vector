@@ -16,18 +16,6 @@
 #include "settings.hpp"
 
 namespace vector {
-/// @brief Storage for the vector class
-///
-/// The storage is an aligned memory region that supports the subscript operator
-/// `storage[i]`
-template<template<class, std::size_t> class S, class T, std::size_t N>
-concept vec_storage = requires(S<T, N>&& s, std::size_t i) {
-	requires(sizeof(S<T, N>) == sizeof(T) * N);
-
-	{ static_cast<S<T, N>&>(s)[i] } -> std::same_as<T&>;
-	{ static_cast<const S<T, N>&>(s)[i] } -> std::same_as<const T&>;
-};
-
 /// @brief Controls which arithmetic options are enabled
 struct Arithmetic
 {
@@ -79,7 +67,7 @@ struct Arithmetic
 	/// -> float assert(y1 == Vec<int, 3>{1, 3, 3}); assert(y2 == Vec<float,
 	/// 3>{1.5, 3.4, 3.2});
 	/// @endcode
-	bool implicit_casting = false;
+	bool implicit_casting = true;
 };
 
 /// @brief Controls which formatting options are enabled
@@ -100,10 +88,10 @@ struct Tuple
 	/// Specializes `std::tuple_element` for Vector
 	bool element = true;
 
-	/// Specializes std::get for Vector
+	/// Specializes `std::get` for Vector
 	///
-	/// @note If the container is stored as a member, or does not specializes
-	/// `std::get`, turning this on enables structured-bindings.
+	/// @note If the container is stored as a member (i.e `extend_storage` is false), or the
+	/// storge does not specializes `std::get`, turning this on enables structured-bindings.
 	bool get = true;
 };
 
@@ -135,10 +123,37 @@ struct VectorFeatures
 	/// assert(v.y == 7.8); // extend_storage is on
 	/// assert(v[2] == 0.5);
 	/// @endcode
-	bool extend_storage = false;
+	bool extend_storage = true;
+
+	/// Enables iterator
+	bool iterator = true;
 };
 
 namespace details {
+template<class T>
+/// @brief Concept for a Vector class
+concept is_vector = requires {
+	typename T::base_type;
+	typename T::Storage;
+	{ T::size() } -> std::same_as<std::size_t>;
+};
+
+/// @brief Storage for the vector class
+///
+/// The storage is an aligned memory region that supports the subscript operator
+/// `storage[i]`
+template<template<class, std::size_t> class S, class T, std::size_t N>
+concept vec_storage = requires(S<T, N>&& s, std::size_t i) {
+	requires(sizeof(S<T, N>) == sizeof(T) * N);
+
+	// Default constructible
+	{ S<T, N>{} } -> std::same_as<S<T, N>>;
+	// Moveable
+	{ S<T, N>{ std::move(s) } } -> std::same_as<S<T, N>>;
+	{ static_cast<S<T, N>&>(s)[i] } -> std::same_as<T&>;
+	{ static_cast<const S<T, N>&>(s)[i] } -> std::same_as<const T&>;
+};
+
 /// @brief Utility to validate vector features.
 /// Meant to be used to give an insight about incompatible settings
 ///
@@ -188,28 +203,52 @@ for_each(F&& fn)
 }
 
 /// @brief Concept for an operator yielding `a·b -> decltype(a)`
-template<class Left, class Right, class Op>
+template<class Left, class Right, class Op, bool implicit_casting>
 concept binary_operator_l = requires(const Left& l, const Right& r, std::size_t i) {
-	typename Left::base_type;
-	typename Right::base_type;
-	{ Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Left::base_type>;
+	requires is_vector<Left>;
+	requires is_vector<Right>;
+	{
+		[] {
+			using return_t = decltype(Op{}.template operator()(l[i], r[i]));
+			if constexpr (implicit_casting) {
+				return std::bool_constant <
+				           std::is_nothrow_convertible_v<return_t, typename Left::base_type> ||
+				         std::same_as < return_t,
+				       typename Left::base_type >> {};
+			} else {
+				return std::bool_constant<std::same_as<return_t, typename Left::base_type>>{};
+			}
+		}()
+	} -> std::same_as<std::true_type>;
 };
 
 /// @brief Concept for an operator yielding `a·b -> decltype(b)`
-template<class Left, class Right, class Op>
+template<class Left, class Right, class Op, bool implicit_casting>
 concept binary_operator_r = requires(const Left& l, const Right& r, std::size_t i) {
-	typename Left::base_type;
-	typename Right::base_type;
-	{ Op{}.template operator()(l[i], r[i]) } -> std::same_as<typename Right::base_type>;
+	requires is_vector<Left>;
+	requires is_vector<Right>;
+	{
+		[] {
+			using return_t = decltype(Op{}.template operator()(l[i], r[i]));
+			if constexpr (implicit_casting) {
+				return std::bool_constant <
+				           std::is_nothrow_convertible_v<return_t, typename Right::base_type> ||
+				         std::same_as < return_t,
+				       typename Right::base_type >> {};
+			} else {
+				return std::bool_constant<std::same_as<return_t, typename Right::base_type>>{};
+			}
+		}()
+	} -> std::same_as<std::true_type>;
 };
 
 /// @brief Concept for an operator yielding `vec·a` -> decltype(vec)
 /// @tparam implicit_casting Whether to allow implicit casting, e.g.
-/// `vec<int>[..] + float` yields a float, but can be implicitly casted to an
-/// int
+/// `vec<int>[..] + float` yields a float, but can be implicitly casted to an int
 template<class Vec, class T, class Op, bool implicit_casting>
 concept binary_operator_scalar_l = requires(const Vec& vec, const T& scalar, std::size_t i) {
-	typename Vec::base_type;
+	requires is_vector<Vec>;
+	requires(std::is_nothrow_convertible_v<typename Vec::base_type, T>);
 	{
 		[] {
 			using return_t = decltype(Op{}.template operator()(vec[i], scalar));
@@ -228,7 +267,8 @@ concept binary_operator_scalar_l = requires(const Vec& vec, const T& scalar, std
 /// @brief Concept for an assign operator yielding `a·b` -> `&decltype(a)`
 template<class Left, class Right, class AssignOp>
 concept assign_operator = requires(Left& l, const Right& r, std::size_t i) {
-	typename Left::base_type;
+	requires is_vector<Left>;
+	requires is_vector<Right>;
 	typename Right::base_type;
 	{
 		AssignOp{}.template operator()(l[i], r[i])
@@ -238,7 +278,8 @@ concept assign_operator = requires(Left& l, const Right& r, std::size_t i) {
 /// @brief Concept for an assign operator yielding `vec·a` -> `&decltype(vec)`
 template<class Vec, class T, class AssignOp, bool implicit_casting>
 concept assign_operator_scalar = requires(Vec& vec, const T& scalar, std::size_t i) {
-	typename Vec::base_type;
+	requires is_vector<Vec>;
+	requires(std::is_nothrow_convertible_v<typename Vec::base_type, T>);
 	{
 		[] {
 			using return_t =
@@ -260,32 +301,35 @@ struct arithmetic
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires binary_operator_l<Self,                                                         \
-	                               Other,                                                        \
-	                               decltype([](auto const& a, auto const& b) -> decltype(auto) { \
-		                               return a __op b;                                          \
-	                               })>                                                           \
-	constexpr Self __op_name(this Self& self, const Other& other)                                \
+	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size()) &&    \
+	            binary_operator_l<Self,                                                          \
+	                              Other,                                                         \
+	                              decltype([](auto const& a, auto const& b) -> decltype(auto) {  \
+		                              return a __op b;                                           \
+	                              }),                                                            \
+	                              Self::Features.arithmetic.implicit_casting>                    \
+	constexpr Self __op_name(this Self&& self, const Other& other)                               \
 	{                                                                                            \
 		static constexpr auto settings =                                                         \
 		  Self::SimdSettings.template get<#__op_name "(this Self& self, const Other& other)">(); \
 		for_each<Self::size(), settings>(                                                        \
 		  [&](std::size_t i) { self[i] = self[i] __op other[i]; });                              \
-		return self;                                                                             \
+		return std::move(self);                                                                  \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) &&                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
+	            (!is_vector<T>) &&                                                               \
 	            binary_operator_scalar_l<Self,                                                   \
 	                                     T,                                                      \
 	                                     decltype([](auto const& a, auto const& b)               \
 	                                                -> decltype(auto) { return a __op b; }),     \
 	                                     Self::Features.arithmetic.implicit_casting>             \
-	constexpr Self __op_name(this Self& self, const T& scalar)                                   \
+	constexpr Self __op_name(this Self&& self, const T& scalar)                                  \
 	{                                                                                            \
 		static constexpr auto settings =                                                         \
 		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();    \
 		for_each<Self::size(), settings>([&](std::size_t i) { self[i] = self[i] __op scalar; }); \
-		return self;                                                                             \
+		return std::move(self);                                                                  \
 	}
 
 	DEFINE_OPERATOR(+, add)
@@ -301,12 +345,15 @@ struct arithmetic_overloads
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires(Self::size() == Other::size())                                                  \
+	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size())       \
 	constexpr decltype(auto) operator __op(this const Self& self, const Other& other)            \
 	{                                                                                            \
-		if constexpr (binary_operator_l<Self, Other, decltype([](const auto& a, const auto& b) { \
+		if constexpr (binary_operator_l<Self,                                                    \
+		                                Other,                                                   \
+		                                decltype([](const auto& a, const auto& b) {              \
 			                                return a __op b;                                     \
-		                                })>) {                                                   \
+		                                }),                                                      \
+		                                Self::Features.arithmetic.implicit_casting>) {           \
 			static_assert(Self::Features.arithmetic.implicit_casting ||                          \
 			              std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
 			Self ret{};                                                                          \
@@ -320,7 +367,8 @@ struct arithmetic_overloads
 		                                       Other,                                            \
 		                                       decltype([](const auto& a, const auto& b) {       \
 			                                       return a __op b;                              \
-		                                       })>) {                                            \
+		                                       }),                                               \
+		                                       Other::Features.arithmetic.implicit_casting>) {   \
 			static_assert(Self::Features.arithmetic.implicit_casting ||                          \
 			              std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
 			Other ret{};                                                                         \
@@ -335,7 +383,8 @@ struct arithmetic_overloads
 		}                                                                                        \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) &&                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
+	            (!is_vector<T>) &&                                                               \
 	            binary_operator_scalar_l<Self,                                                   \
 	                                     T,                                                      \
 	                                     decltype([](auto const& a, auto const& b)               \
@@ -364,11 +413,12 @@ struct arithmetic_assignment_overloads
 {
 #define DEFINE_OPERATOR(__op, __op_name)                                                         \
 	template<class Self, class Other = Self>                                                     \
-	    requires assign_operator<Self,                                                           \
-	                             Other,                                                          \
-	                             decltype([](auto& a, auto const& b) -> decltype(auto) {         \
-		                             return a __op b;                                            \
-	                             })>                                                             \
+	    requires(is_vector<Self>) && (is_vector<Other>) && (Self::size() == Other::size()) &&    \
+	            assign_operator<Self,                                                            \
+	                            Other,                                                           \
+	                            decltype([](auto& a, auto const& b) -> decltype(auto) {          \
+		                            return a __op b;                                             \
+	                            })>                                                              \
 	constexpr Self& operator __op(this Self & self, const Other & other)                         \
 	{                                                                                            \
 		static constexpr auto settings =                                                         \
@@ -377,14 +427,15 @@ struct arithmetic_assignment_overloads
 		return self;                                                                             \
 	}                                                                                            \
 	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) &&                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (is_vector<Self>) &&            \
+	            (!is_vector<T>) &&                                                               \
 	            assign_operator_scalar<Self,                                                     \
 	                                   T,                                                        \
 	                                   decltype([](auto& a, auto const& b) -> decltype(auto) {   \
 		                                   return a __op b;                                      \
 	                                   }),                                                       \
 	                                   Self::Features.arithmetic.implicit_casting>               \
-	constexpr Self operator __op(this Self& self, const T& scalar)                               \
+	constexpr Self& operator __op(this Self & self, const T & scalar)                            \
 	{                                                                                            \
 		static constexpr auto settings =                                                         \
 		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();    \
@@ -405,8 +456,7 @@ struct arithmetic_assignment_overloads
 ///
 /// @tparam T The vector's element type
 /// @tparam N The number of elements
-/// @tparam S The storage type, must verify details::vec_storage. Defaults to
-/// `std::array`
+/// @tparam S The storage type, must verify details::vec_storage. Defaults to `std::array`
 /// @tparam _Features The vector's features, see VectorFeatures
 /// @tparam _SimdSettings Dispatch policies for details::for_each, see
 /// vector::SettingsRegistry< SettingsField< Names, Settings >... >
@@ -415,7 +465,7 @@ template<class T,
          template<class, std::size_t> class S = std::array,
          VectorFeatures _Features = VectorFeatures{},
          auto _SimdSettings = SettingsRegistry<SettingsField<"default", SimdSettings{}>>{}>
-    requires vec_storage<S, T, N> && (details::validate_features<_Features>())
+    requires details::vec_storage<S, T, N> && (details::validate_features<_Features>())
 struct Vector
   : public std::conditional_t<_Features.extend_storage, S<T, N>, std::monostate>
   , public std::conditional_t<_Features.arithmetic.enabled, details::arithmetic, std::monostate>
@@ -479,7 +529,7 @@ struct Vector
 		static constexpr auto settings =
 		  SimdSettings.template get<"operator==(this const Vector& self, const Vector& other)">();
 		bool equal = true;
-		for_each<size(), settings>([&](std::size_t i) { equal &= self[i] == other[i]; });
+		details::for_each<size(), settings>([&](std::size_t i) { equal &= self[i] == other[i]; });
 		return equal;
 	}
 
@@ -490,14 +540,53 @@ struct Vector
 	// }}}
 
 	// {{{ Constructors
+	/// @brief Default constructor
+	///
+	/// Construct by calling vector::vec_storage's default constructor
 	constexpr explicit Vector()
-	    requires std::default_initializable<Storage>
+	    requires(Features.extend_storage) && std::default_initializable<Storage>
 	  : Storage{}
 	{
 	}
 
+	/// @brief Default constructor
+	///
+	/// Construct by calling vector::vec_storage's default constructor
+	constexpr explicit Vector()
+	    requires(!Features.extend_storage) && std::default_initializable<Storage>
+	  : _storage{}
+	{
+	}
+
+	/// @brief Copy constructor for non-extended storage that implements copy
+	///
+	/// This is called if the storage is not extended (i.e. `extend_storage` is disabled) and the
+	/// storage has a copy constructor
 	constexpr Vector(const Vector& other)
-	    requires std::copyable<T>
+	    requires(!Features.extend_storage) && std::copyable<Storage>
+	  : _storage{ other._storage }
+	{
+		if (this == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+	}
+
+	/// @brief Copy constructor for extended storage that implements copy
+	///
+	/// This is called if the storage is extended (i.e. `extend_storage` is enabled) and the
+	/// storage has a copy constructor
+	constexpr Vector(const Vector& other)
+	    requires(Features.extend_storage) && std::copyable<Storage>
+	  : Storage{ other }
+	{
+		if (this == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+	}
+
+	/// @brief Copy constructor for non-copyable storage that have copyable element
+	constexpr Vector(const Vector& other)
+	    requires std::copyable<T> && (!std::copyable<Storage>)
 	{
 		if (this == &other) [[unlikely]] {
 			throw std::invalid_argument("Attempted to assign to self");
@@ -510,8 +599,19 @@ struct Vector
 	}
 
 	constexpr Vector(Vector&& other)
-	    requires std::default_initializable<Storage> && std::is_move_assignable_v<Storage>
-	  : Storage{ std::exchange(static_cast<Storage&>(other), Storage{}) }
+	    requires(Features.extend_storage) && std::is_move_assignable_v<Storage>
+
+	  : Storage{ std::move(static_cast<Storage&>(other)) }
+	{
+		if (this == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+	}
+
+	constexpr Vector(Vector&& other)
+	    requires(!Features.extend_storage) && std::is_move_assignable_v<Storage>
+
+	  : _storage{ std::move(other._storage) }
 	{
 		if (this == &other) [[unlikely]] {
 			throw std::invalid_argument("Attempted to assign to self");
@@ -534,25 +634,47 @@ struct Vector
 	constexpr Vector& operator=(this Vector& self, const Vector& other)
 	    requires std::copyable<T>
 	{
+		if (&self == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+
 		static constexpr auto settings =
 		  SimdSettings.template get<"operator=(this Vector& self, const Vector& other)">();
 		details::for_each<N, settings>([&](std::size_t i) { self[i] = other[i]; });
 		return self;
 	}
 
+	/// @brief Move assignment
+	constexpr Vector& operator=(this Vector& self, Vector&& other)
+	    requires std::is_move_assignable_v<Storage>
+	{
+		if (&self == &other) [[unlikely]] {
+			throw std::invalid_argument("Attempted to assign to self");
+		}
+
+		if constexpr (Features.extend_storage) {
+			self = std::move(other);
+		} else {
+			self._storage = std::move(other._storage);
+		}
+
+		return self;
+	}
+
 	/// @brief Clones the vector
 	///
-	/// Clones the underlying container or creates a new container, copying each
-	/// values
+	/// Clones the vector by calling the copy construcument 1 of ‘constexpr Self&
+	/// vector::details::arithmetic::add(this Self&, const Other&) [wtor
 	///
 	/// @pram self Vector to clone
-	constexpr Vector clone(this Vector& self) {}
+	constexpr Vector clone(this const Vector& self) { return Vector{ self }; }
 
 	constexpr ~Vector() {}
 	// }}}
 }; // Vector
 } // namespace vector
 
+/// Specialization of std's functionnalities for Vector
 namespace std {
 /// @brief `std::formatter` specialization for Vector
 template<class T,
@@ -561,8 +683,8 @@ template<class T,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::vec_storage<S, T, N> &&
-             (::vector::details::validate_features<Features>()) && (Features.formatting.format)
+    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+             (Features.formatting.format)
 struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char>
 {
 
@@ -599,8 +721,8 @@ template<class T,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::vec_storage<S, T, N> &&
-             (::vector::details::validate_features<Features>()) && (Features.tuple.size)
+    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+             (Features.tuple.size)
 struct tuple_size<::vector::Vector<T, N, S, Features, SimdSettings>>
   : std::integral_constant<std::size_t, N>
 {};
@@ -613,15 +735,14 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::vec_storage<S, T, N> &&
-             (::vector::details::validate_features<Features>()) && (Features.tuple.element)
+    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+             (Features.tuple.element)
 struct tuple_element<I, ::vector::Vector<T, N, S, Features, SimdSettings>>
 {
 	using type = T;
 };
 
 // @brief `std::get` specialization for Vector
-// @relates std::formatter
 template<std::size_t I,
          class T,
          std::size_t N,
@@ -629,8 +750,8 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::vec_storage<S, T, N> &&
-             (::vector::details::validate_features<Features>()) && (Features.tuple.get)
+    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+             (Features.tuple.get)
 constexpr decltype(auto)
   get(const ::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
 {
@@ -638,7 +759,6 @@ constexpr decltype(auto)
 }
 
 // @brief `std::get` specialization for Vector
-// @relates std::formatter
 template<std::size_t I,
          class T,
          std::size_t N,
@@ -646,8 +766,8 @@ template<std::size_t I,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::vec_storage<S, T, N> &&
-             (::vector::details::validate_features<Features>()) && (Features.tuple.get)
+    requires ::vector::details::is_vector<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+             (Features.tuple.get)
 constexpr decltype(auto) get(::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
 {
 	return vec[I];
