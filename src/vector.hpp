@@ -131,6 +131,9 @@ struct Tuple
 	/// const auto& [x, y, z] = v; // Features.tuple.get enabled
 	/// @endcode
 	bool get = true;
+
+	/// Specializes `std::apply` for Vector
+	bool apply = true;
 };
 
 /// @brief Controls the iterators settings
@@ -348,7 +351,7 @@ for_each(F&& fn)
 			((fn(i)), ...);
 		}(std::make_index_sequence<N>{});
 	} else if constexpr (simd == SimdSettings::SIMD) {
-		//[[omp::directive(simd)]]
+		[[omp::directive(simd)]]
 		for (std::size_t i = 0; i < N; ++i) {
 			fn(i);
 		}
@@ -1262,6 +1265,18 @@ template<std::size_t I, ::vector::vector_type Vec>
 constexpr decltype(auto) get(Vec& vec)
 {
 	return vec[I];
+}
+
+/// @brief `std::apply` specialization for vector::Vector
+/// @related vector::Vector
+template<class F, class Vec>
+    requires ::vector::vector_type<std::remove_cvref_t<Vec>> &&
+             (std::remove_cvref_t<Vec>::Features.tuple.apply)
+constexpr decltype(auto) apply(F&& f, Vec&& v)
+{
+	return [&]<auto... i>(std::index_sequence<i...>) {
+		return std::forward<F>(f)(std::forward<Vec>(v)[i]...);
+	}(std::make_index_sequence<std::remove_cvref_t<Vec>::size()>{});
 }
 } // namespace std
 
