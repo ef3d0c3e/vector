@@ -176,7 +176,7 @@ struct VectorFeatures
 	/// assert(v.y == 7.8); // extend_storage is on
 	/// assert(v[2] == 0.5);
 	/// @endcode
-	bool extend_storage = false;
+	bool extend_storage = true;
 
 	/// Enables the implicit copy constructor.
 	///
@@ -188,7 +188,7 @@ struct VectorFeatures
 	/// Vec<int, 3> v;
 	/// v = u; // ok, element-wise copy
 	/// @endcode
-	bool copy_constructor = true;
+	bool copy_constructor = false;
 };
 
 // Settings for for_each function
@@ -263,14 +263,32 @@ class SettingsRegistry<SettingsField<Names, Settings>...>
 	}
 };
 
-namespace details {
-template<class T>
 /// @brief Concept for a Vector class
+template<class T>
 concept vector_type = requires {
 	typename T::base_type;
 	typename T::Storage;
 	{ T::size() } -> std::same_as<std::size_t>;
 };
+
+namespace details {
+/// @brief Checks if a type implements tuple_element
+template<class T, std::size_t I>
+concept has_tuple_element = requires(T t) {
+	typename std::tuple_element_t<I, std::remove_const_t<T>>;
+	{ std::get<I>(t) } -> std::convertible_to<const std::tuple_element_t<I, T>&>;
+};
+
+/// @brief Checks if a type is tuple-like
+template<class T>
+concept tuple_like = requires(T t) {
+	requires !std::is_reference_v<T>;
+	typename std::tuple_size<T>::type;
+	requires std::derived_from<std::tuple_size<T>,
+	                           std::integral_constant<std::size_t, std::tuple_size_v<T>>>;
+} && []<std::size_t... N>(std::index_sequence<N...>) {
+	return (has_tuple_element<T, N> && ...);
+}(std::make_index_sequence<std::tuple_size_v<T>>());
 
 /// @brief Storage for the vector class
 ///
@@ -330,7 +348,7 @@ for_each(F&& fn)
 			((fn(i)), ...);
 		}(std::make_index_sequence<N>{});
 	} else if constexpr (simd == SimdSettings::SIMD) {
-		[[omp::directive(simd)]]
+		//[[omp::directive(simd)]]
 		for (std::size_t i = 0; i < N; ++i) {
 			fn(i);
 		}
@@ -639,7 +657,8 @@ struct iterators<true>
 	template<class Self, bool Const, bool Reverse>
 	struct vector_iterator
 	{
-		using iterator_category = std::contiguous_iterator_tag;
+		using iterator_category = std::
+		  conditional_t<Reverse, std::random_access_iterator_tag, std::contiguous_iterator_tag>;
 		using value_type = Self::base_type;
 		using difference_type = std::ptrdiff_t;
 		using pointer = std::conditional_t<Const, const value_type*, value_type*>;
@@ -745,73 +764,106 @@ struct iterators<true>
 	template<class Self>
 	constexpr decltype(auto) begin(this Self& self)
 	{
-		return vector_iterator<Self, false, false>{
-			.vec = &self,
-			.pos = 0,
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::begin(self._storage);
+		} else {
+			return vector_iterator<Self, false, false>{
+				.vec = &self,
+				.pos = 0,
+			};
+		}
 	}
 	/// @brief Iterator to the Vector's end
 	template<class Self>
 	constexpr decltype(auto) end(this Self& self)
 	{
-		return vector_iterator<Self, false, false>{
-			.vec = &self,
-			.pos = Self::size(),
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::end(self._storage);
+		} else {
+			return vector_iterator<Self, false, false>{
+				.vec = &self,
+				.pos = Self::size(),
+			};
+		}
 	}
 	/// @brief Const iterator to the Vector's begin
 	template<class Self>
 	constexpr decltype(auto) cbegin(this const Self& self)
 	{
-		return vector_iterator<Self, true, false>{
-			.vec = &self,
-			.pos = 0,
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::cbegin(self._storage);
+		} else {
+			return vector_iterator<Self, true, false>{
+				.vec = &self,
+				.pos = 0,
+			};
+		}
 	}
 	/// @brief Const iterator to the Vector's end
 	template<class Self>
 	constexpr decltype(auto) cend(this const Self& self)
 	{
-		return vector_iterator<Self, true, false>{
-			.vec = &self,
-			.pos = Self::size(),
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::cend(self._storage);
+		} else {
+			return vector_iterator<Self, true, false>{
+				.vec = &self,
+				.pos = Self::size(),
+			};
+		}
 	}
 	/// @brief Reverse iterator to the Vector's start
 	template<class Self>
 	constexpr decltype(auto) rbegin(this Self& self)
 	{
-		return vector_iterator<Self, false, true>{
-			.vec = &self,
-			.pos = Self::size() - 1,
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::rbegin(self._storage);
+		} else {
+			return vector_iterator<Self, false, true>{
+				.vec = &self,
+				.pos = Self::size() - 1,
+			};
+		}
 	}
+
 	/// @brief Reverse iterator to the Vector's end
 	template<class Self>
 	constexpr decltype(auto) rend(this Self& self)
 	{
-		return vector_iterator<Self, false, true>{
-			.vec = &self,
-			.pos = -1,
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::rend(self._storage);
+		} else {
+			return vector_iterator<Self, false, true>{
+				.vec = &self,
+				.pos = -1,
+			};
+		}
 	}
 	/// @brief Const reverse iterator to the Vector's start
 	template<class Self>
 	constexpr decltype(auto) crbegin(this const Self& self)
 	{
-		return vector_iterator<Self, true, true>{
-			.vec = &self,
-			.pos = Self::size() - 1,
-		};
+		if constexpr (Self::Features.iterators.use_storage) {
+			return std::crbegin(self._storage);
+		} else {
+			return vector_iterator<Self, true, true>{
+				.vec = &self,
+				.pos = Self::size() - 1,
+			};
+		}
 	}
 	/// @brief Const reverse iterator to the Vector's end
 	template<class Self>
 	constexpr decltype(auto) crend(this const Self& self)
 	{
-		return vector_iterator<Self, true, true>{
-			.vec = &self,
-			.pos = -1,
-		};
+		if constexpr (Self::Features.iterators.use_storage && !Self::Features.extend_storage) {
+			return std::crend(self._storage);
+		} else {
+			return vector_iterator<Self, true, true>{
+				.vec = &self,
+				.pos = -1,
+			};
+		}
 	}
 };
 } // namespace details
@@ -831,11 +883,11 @@ template<class T,
          auto _SimdSettings = SettingsRegistry<SettingsField<"default", SimdSettings{}>>{}>
     requires details::vec_storage<S, T, N> && (details::validate_features<_Features>())
 struct Vector
-  : public std::conditional_t<_Features.extend_storage, S<T, N>, std::monostate>
-  , public details::arithmetic<_Features.arithmetic.enabled>
-  , public details::arithmetic_overloads<_Features.arithmetic.overloads>
-  , public details::arithmetic_assignment_overloads<_Features.arithmetic.assignment>
-  , public details::iterators<_Features.iterators.enabled && !_Features.iterators.use_storage>
+  : std::conditional_t<_Features.extend_storage, S<T, N>, std::monostate>
+  , details::arithmetic<_Features.arithmetic.enabled>
+  , details::arithmetic_overloads<_Features.arithmetic.overloads>
+  , details::arithmetic_assignment_overloads<_Features.arithmetic.assignment>
+  , details::iterators<_Features.iterators.enabled && !_Features.extend_storage>
 {
 	/// Stored data if `extend_storage` is disabled
 	[[no_unique_address]]
@@ -850,35 +902,47 @@ struct Vector
 	/// The vector's storage type i.e. template parameter `S`
 	using Storage = S<T, N>;
 	/// The iterator type
-	using iterator = std::conditional_t<
-	  Features.iterators.enabled,
-	  std::conditional_t<
-	    Features.iterators.use_storage,
-	    std::remove_cvref_t<decltype(std::begin(Storage()))>,
-	    details::iterators<
-	      true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, false>>,
-	  std::monostate>;
-	using const_iterator = std::conditional_t<
-	  Features.iterators.enabled,
-	  std::conditional_t<Features.iterators.use_storage,
-	                     std::remove_cvref_t<decltype(std::cbegin(Storage()))>,
-	                     details::iterators<true>::
-	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, false>>,
-	  std::monostate>;
-	using reverse_iterator = std::conditional_t<
-	  Features.iterators.enabled,
-	  std::conditional_t<Features.iterators.use_storage,
-	                     std::remove_cvref_t<decltype(std::rbegin(Storage()))>,
-	                     details::iterators<true>::
-	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, true>>,
-	  std::monostate>;
-	using const_reverse_iterator = std::conditional_t<
-	  Features.iterators.enabled,
-	  std::conditional_t<Features.iterators.use_storage,
-	                     std::remove_cvref_t<decltype(std::crbegin(Storage()))>,
-	                     details::iterators<true>::
-	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, true>>,
-	  std::monostate>;
+	using iterator = decltype([] {
+		if constexpr (!Features.iterators.enabled) {
+			return std::monostate{};
+		} else if constexpr (Features.iterators.use_storage) {
+			return std::begin(Storage{});
+		} else {
+			return details::iterators<
+			  true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, false>{};
+		}
+	}());
+	using const_iterator = decltype([] {
+		if constexpr (!Features.iterators.enabled) {
+			return std::monostate{};
+		} else if constexpr (Features.iterators.use_storage) {
+			return std::cbegin(Storage{});
+		} else {
+			return details::iterators<
+			  true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, false>{};
+		}
+	}());
+	using reverse_iterator = decltype([] {
+		if constexpr (!Features.iterators.enabled) {
+			return std::monostate{};
+		} else if constexpr (Features.iterators.use_storage) {
+			return std::rbegin(Storage{});
+		} else {
+			return details::iterators<
+			  true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, true>{};
+		}
+	}());
+	using const_reverse_iterator = decltype([] {
+		if constexpr (!Features.iterators.enabled) {
+			return std::monostate{};
+		} else if constexpr (Features.iterators.use_storage) {
+			return std::crbegin(Storage{});
+		} else {
+			return details::iterators<
+			  true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, true>{};
+		}
+	}());
+
 	/// @brief Gets the vector's size i.e. template parameter `N`
 	///
 	/// @return The number of elements
@@ -886,7 +950,7 @@ struct Vector
 
 	/// @brief Subscript operator
 	///
-	/// @param self A (const) lvalue reference to Vetor
+	/// @param self A (const) lvalue reference to Vector
 	/// @param i Index of the element
 	///
 	/// @returns The value at index @p i in @p self
@@ -1091,7 +1155,7 @@ struct Vector
 	/// @brief Clones the vector
 	///
 	/// Clones the vector by either cloning it's storage,
-	/// or by default-initializing the vector and copying element-wise
+	/// or by default-initializing the vector and copying element-wise.
 	///
 	/// @pram self Vector to clone
 	constexpr Vector clone(this const Vector& self)
@@ -1123,7 +1187,7 @@ struct Vector
 }; // Vector
 } // namespace vector
 
-/// Specialization of std's functionnalities for vector::Vector
+/// Specialization of std's functionalities for vector::Vector
 namespace std {
 /// @brief `std::formatter` specialization for link vector::Vector
 /// @related vector::Vector
@@ -1136,7 +1200,7 @@ template<class T,
          class S,
          ::vector::VectorFeatures Features,
          auto SimdSettings>
-    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
+    requires ::vector::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
              (Features.formatting.format)
 struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char>
 {
@@ -1169,66 +1233,57 @@ struct formatter<::vector::Vector<T, N, S, Features, SimdSettings>, char>
 
 /// @brief `std::tuple_size` specialization for vector::Vector
 /// @related vector::Vector
-template<class T,
-         std::size_t N,
-         template<class, std::size_t>
-         class S,
-         ::vector::VectorFeatures Features,
-         auto SimdSettings>
-    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
-             (Features.tuple.size)
-struct tuple_size<::vector::Vector<T, N, S, Features, SimdSettings>>
-  : std::integral_constant<std::size_t, N>
+template<::vector::vector_type Vec>
+    requires(Vec::Features.tuple.size)
+struct tuple_size<Vec> : std::integral_constant<std::size_t, Vec::size()>
 {};
 
 /// @brief `std::tuple_element` specialization for vector::Vector
 /// @related vector::Vector
-template<std::size_t I,
-         class T,
-         std::size_t N,
-         template<class, std::size_t>
-         class S,
-         ::vector::VectorFeatures Features,
-         auto SimdSettings>
-    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
-             (Features.tuple.element)
-struct tuple_element<I, ::vector::Vector<T, N, S, Features, SimdSettings>>
+template<std::size_t I, ::vector::vector_type Vec>
+    requires(Vec::Features.tuple.element)
+struct tuple_element<I, Vec>
 {
-	using type = T;
+	using type = Vec::base_type;
 };
-
 /// @brief `std::get` specialization for vector::Vector
 /// @related vector::Vector
-template<std::size_t I,
-         class T,
-         std::size_t N,
-         template<class, std::size_t>
-         class S,
-         ::vector::VectorFeatures Features,
-         auto SimdSettings>
-    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
-             (Features.tuple.get)
-constexpr decltype(auto)
-  get(const ::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
+template<std::size_t I, ::vector::vector_type Vec>
+    requires(Vec::Features.tuple.get) && (::vector::details::tuple_like<typename Vec::Storage>)
+constexpr decltype(auto) get(const Vec& vec)
 {
 	return vec[I];
 }
 
 /// @brief `std::get` specialization for vector::Vector
 /// @related vector::Vector
-template<std::size_t I,
-         class T,
-         std::size_t N,
-         template<class, std::size_t>
-         class S,
-         ::vector::VectorFeatures Features,
-         auto SimdSettings>
-    requires ::vector::details::vector_type<::vector::Vector<T, N, S, Features, SimdSettings>> &&
-             (Features.tuple.get)
-constexpr decltype(auto) get(::vector::Vector<T, N, S, Features, SimdSettings>& vec) noexcept
+template<std::size_t I, ::vector::vector_type Vec>
+    requires(Vec::Features.tuple.get) && (::vector::details::tuple_like<typename Vec::Storage>)
+constexpr decltype(auto) get(Vec& vec)
 {
 	return vec[I];
 }
 } // namespace std
+
+/// @brief `get` specialization for vector::Vector
+/// @related vector::Vector
+///
+/// @note This function is called when the storage is not structural, otherwise std::get is called
+template<std::size_t I, ::vector::vector_type Vec>
+    requires(Vec::Features.tuple.get) && (!vector::details::tuple_like<typename Vec::Storage>)
+constexpr decltype(auto) get(const Vec& vec)
+{
+	return vec[I];
+}
+/// @brief `get` specialization for vector::Vector
+/// @related vector::Vector
+///
+/// @note This function is called when the storage is not structural, otherwise std::get is called
+template<std::size_t I, ::vector::vector_type Vec>
+    requires(Vec::Features.tuple.get) && (!vector::details::tuple_like<typename Vec::Storage>)
+constexpr decltype(auto) get(Vec& vec)
+{
+	return vec[I];
+}
 
 #endif // VECTOR_HPP
