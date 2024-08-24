@@ -119,7 +119,7 @@ struct Tuple
 	/// Specializes `std::get` for Vector
 	///
 	/// @note If the container is stored as a member (i.e `extend_storage` is false), or the
-	/// storge does not specializes `std::get` (or is not structural), turning this on enables
+	/// storage does not specializes `std::get` (or is not structural), turning this on enables
 	/// structured-bindings. For instance:
 	/// @code
 	/// template <class T, std::size_t N>
@@ -136,6 +136,8 @@ struct Tuple
 /// @brief Controls the iterators settings
 struct Iterators
 {
+	/// Enables iterators on vector::Vector.
+	/// Because `vec_storage` is contiguous, the iterators are pointers to `T`.
 	bool enabled = true;
 
 	/// Uses the storage's iterator when available
@@ -174,7 +176,7 @@ struct VectorFeatures
 	/// assert(v.y == 7.8); // extend_storage is on
 	/// assert(v[2] == 0.5);
 	/// @endcode
-	bool extend_storage = true;
+	bool extend_storage = false;
 
 	/// Enables the implicit copy constructor.
 	///
@@ -318,7 +320,7 @@ validate_features()
 /// @param fn The callback to execute
 /// @tparam N The number of times to execute the callback
 /// @tparam simd The callback's execution policy, see vector::SimdSettings
-/// @tparam F The callback functor \code{.cpp}(std::size_t) -> void\endcode
+/// @tparam F The callback functor @code{.cpp}(std::size_t) -> void@endcode
 template<std::size_t N, SimdSettings simd, class F>
 void
 for_each(F&& fn)
@@ -616,6 +618,202 @@ struct arithmetic_assignment_overloads<true>
 
 #undef DEFINE_OPERATOR
 }; // arithmetic_assignment_overloads
+
+/// @cond
+template<bool>
+struct iterators;
+
+template<>
+struct iterators<false>
+{};
+/// @endcond
+
+/// @brief Iterators helper for custom iterators
+template<>
+struct iterators<true>
+{
+	/// @brief Iterator type
+	///
+	/// @tparam Const whether this is a `const_iterator`
+	/// @tparam Reverse whether this is a `reverse_iterator`
+	template<class Self, bool Const, bool Reverse>
+	struct vector_iterator
+	{
+		using iterator_category = std::contiguous_iterator_tag;
+		using value_type = Self::base_type;
+		using difference_type = std::ptrdiff_t;
+		using pointer = std::conditional_t<Const, const value_type*, value_type*>;
+		using reference = std::conditional_t<Const, const value_type&, value_type&>;
+
+		constexpr std::ptrdiff_t offset(this const vector_iterator& self, std::ptrdiff_t off)
+		{
+			if constexpr (Reverse) {
+				return std::ptrdiff_t{ self.pos } - off;
+			} else {
+				return self.pos + off;
+			}
+		}
+
+		std::conditional_t<Const, const Self*, Self*> vec;
+		std::ptrdiff_t pos;
+
+		constexpr decltype(auto) operator*(this auto&& self) { return (*self.vec)[self.pos]; }
+		constexpr decltype(auto) operator->(this auto&& self) { return &(*self.vec)[self.pos]; }
+		constexpr decltype(auto) operator[](this auto&& self, std::size_t i)
+		{
+			return (*self.vec)[self.offset(i)];
+		}
+
+		constexpr vector_iterator& operator=(this vector_iterator& self,
+		                                     const vector_iterator& other) noexcept
+		{
+			self.vec = other.vec;
+			self.pos = other.pos;
+
+			return self;
+		}
+
+		constexpr vector_iterator& operator++(this vector_iterator& self)
+		{
+			self.pos = self.offset(1);
+			return self;
+		}
+		constexpr vector_iterator operator++(this const vector_iterator& self, int)
+		{
+			auto copy = self;
+			return ++copy;
+		}
+		constexpr vector_iterator& operator--(this vector_iterator& self)
+		{
+			self.pos = self.offset(-1);
+			return self;
+		}
+		constexpr vector_iterator operator--(this const vector_iterator& self, int)
+		{
+			auto copy = self;
+			return --copy;
+		}
+
+		constexpr vector_iterator operator+(this const vector_iterator& self,
+		                                    const difference_type i)
+		{
+			return vector_iterator{ .vec = self.vec, .pos = self.offset(i) };
+		}
+		friend constexpr vector_iterator operator+(const difference_type i,
+		                                           const vector_iterator& self)
+		{
+			return vector_iterator{ .vec = self.vec, .pos = self.offset(i) };
+		}
+		constexpr vector_iterator& operator+=(this vector_iterator& self, difference_type i)
+		{
+			self.pos += i;
+			return self;
+		}
+		constexpr vector_iterator operator-(this const vector_iterator& self, difference_type i)
+		{
+			return vector_iterator{ .vec = self.vec, .pos = self.offset(-i) };
+		}
+		constexpr difference_type operator-(this const vector_iterator& self,
+		                                    const vector_iterator& other)
+		{
+			return self.vec + self.offset(-other.pos);
+		}
+		constexpr vector_iterator& operator-=(this vector_iterator& self, difference_type i)
+		{
+			self.pos = self.offset(-i);
+			return self;
+		}
+
+		constexpr bool operator==(this const vector_iterator& self, const vector_iterator& other)
+		{
+			return self.vec == other.vec && self.pos == other.pos;
+		}
+		constexpr bool operator!=(this const vector_iterator& self, const vector_iterator& other)
+		{
+			return !(self == other);
+		}
+
+		constexpr auto operator<=>(this const vector_iterator& self, const vector_iterator& other)
+		{
+			if (self.vec != other.vec)
+				return std::strong_ordering::equivalent;
+			return self.pos <=> other.pos;
+		}
+	};
+
+	/// @brief Iterator to the Vector's start
+	template<class Self>
+	constexpr decltype(auto) begin(this Self& self)
+	{
+		return vector_iterator<Self, false, false>{
+			.vec = &self,
+			.pos = 0,
+		};
+	}
+	/// @brief Iterator to the Vector's end
+	template<class Self>
+	constexpr decltype(auto) end(this Self& self)
+	{
+		return vector_iterator<Self, false, false>{
+			.vec = &self,
+			.pos = Self::size(),
+		};
+	}
+	/// @brief Const iterator to the Vector's begin
+	template<class Self>
+	constexpr decltype(auto) cbegin(this const Self& self)
+	{
+		return vector_iterator<Self, true, false>{
+			.vec = &self,
+			.pos = 0,
+		};
+	}
+	/// @brief Const iterator to the Vector's end
+	template<class Self>
+	constexpr decltype(auto) cend(this const Self& self)
+	{
+		return vector_iterator<Self, true, false>{
+			.vec = &self,
+			.pos = Self::size(),
+		};
+	}
+	/// @brief Reverse iterator to the Vector's start
+	template<class Self>
+	constexpr decltype(auto) rbegin(this Self& self)
+	{
+		return vector_iterator<Self, false, true>{
+			.vec = &self,
+			.pos = Self::size() - 1,
+		};
+	}
+	/// @brief Reverse iterator to the Vector's end
+	template<class Self>
+	constexpr decltype(auto) rend(this Self& self)
+	{
+		return vector_iterator<Self, false, true>{
+			.vec = &self,
+			.pos = -1,
+		};
+	}
+	/// @brief Const reverse iterator to the Vector's start
+	template<class Self>
+	constexpr decltype(auto) crbegin(this const Self& self)
+	{
+		return vector_iterator<Self, true, true>{
+			.vec = &self,
+			.pos = Self::size() - 1,
+		};
+	}
+	/// @brief Const reverse iterator to the Vector's end
+	template<class Self>
+	constexpr decltype(auto) crend(this const Self& self)
+	{
+		return vector_iterator<Self, true, true>{
+			.vec = &self,
+			.pos = -1,
+		};
+	}
+};
 } // namespace details
 
 /// @brief The vector class
@@ -637,6 +835,7 @@ struct Vector
   , public details::arithmetic<_Features.arithmetic.enabled>
   , public details::arithmetic_overloads<_Features.arithmetic.overloads>
   , public details::arithmetic_assignment_overloads<_Features.arithmetic.assignment>
+  , public details::iterators<_Features.iterators.enabled && !_Features.iterators.use_storage>
 {
 	/// Stored data if `extend_storage` is disabled
 	[[no_unique_address]]
@@ -651,23 +850,35 @@ struct Vector
 	/// The vector's storage type i.e. template parameter `S`
 	using Storage = S<T, N>;
 	/// The iterator type
-	using iterator =
-	  std::conditional_t<Features.iterators.enabled,
-	                     std::conditional_t<Features.iterators.use_storage,
-	                                        std::remove_cvref_t<decltype(std::begin(Storage()))>,
-	                                        T*>,
-	                     std::monostate>;
-	using const_iterator =
-	  std::conditional_t<Features.iterators.enabled,
-	                     std::conditional_t<Features.iterators.use_storage,
-	                                        std::remove_cvref_t<decltype(std::cbegin(Storage()))>,
-	                                        const T*>,
-	                     std::monostate>;
-	using reverse_iterator = std::
-	  conditional_t<Features.iterators.enabled, std::reverse_iterator<iterator>, std::monostate>;
-	using constreverse_iterator = std::conditional_t<Features.iterators.enabled,
-	                                                 std::reverse_iterator<const_iterator>,
-	                                                 std::monostate>;
+	using iterator = std::conditional_t<
+	  Features.iterators.enabled,
+	  std::conditional_t<
+	    Features.iterators.use_storage,
+	    std::remove_cvref_t<decltype(std::begin(Storage()))>,
+	    details::iterators<
+	      true>::vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, false>>,
+	  std::monostate>;
+	using const_iterator = std::conditional_t<
+	  Features.iterators.enabled,
+	  std::conditional_t<Features.iterators.use_storage,
+	                     std::remove_cvref_t<decltype(std::cbegin(Storage()))>,
+	                     details::iterators<true>::
+	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, false>>,
+	  std::monostate>;
+	using reverse_iterator = std::conditional_t<
+	  Features.iterators.enabled,
+	  std::conditional_t<Features.iterators.use_storage,
+	                     std::remove_cvref_t<decltype(std::rbegin(Storage()))>,
+	                     details::iterators<true>::
+	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, false, true>>,
+	  std::monostate>;
+	using const_reverse_iterator = std::conditional_t<
+	  Features.iterators.enabled,
+	  std::conditional_t<Features.iterators.use_storage,
+	                     std::remove_cvref_t<decltype(std::crbegin(Storage()))>,
+	                     details::iterators<true>::
+	                       vector_iterator<Vector<T, N, S, Features, SimdSettings>, true, true>>,
+	  std::monostate>;
 	/// @brief Gets the vector's size i.e. template parameter `N`
 	///
 	/// @return The number of elements
@@ -887,7 +1098,7 @@ struct Vector
 	{
 		// Copy storage
 		if constexpr (!Features.extend_storage && std::copyable<Storage>) {
-			return Vector{ ._storage = self._storage };
+			return Vector{ Storage{ self._storage } };
 		} else if constexpr (Features.extend_storage && std::copyable<Storage>) {
 			auto copy = static_cast<Storage>(self);
 			return static_cast<Vector>(std::move(copy));
