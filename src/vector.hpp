@@ -456,13 +456,11 @@ concept assign_operator_scalar = requires(Vec& vec, const T& scalar, std::size_t
 	} -> std::same_as<std::true_type>;
 };
 
-/// @cond
 template<bool>
 struct arithmetic;
 template<>
 struct arithmetic<false>
 {};
-/// @endcond
 
 /// @brief Defines the arithmetic operations
 template<>
@@ -510,13 +508,11 @@ struct arithmetic<true>
 #undef DEFINE_OPERATOR
 }; // arithmetic
 
-/// @cond
 template<bool>
 struct arithmetic_overloads;
 template<>
 struct arithmetic_overloads<false>
 {};
-/// @endcond
 
 /// @brief Overloads the arithmetic operators (+, -, *, /)
 template<>
@@ -587,13 +583,11 @@ struct arithmetic_overloads<true>
 #undef DEFINE_OPERATOR
 }; // arithmetic_overloads
 
-/// @cond
 template<bool>
 struct arithmetic_assignment_overloads;
 template<>
 struct arithmetic_assignment_overloads<false>
 {};
-/// @endcond
 
 /// @brief Overloads the arithmetic assignment operators (+=, -=, *=, /=)
 template<>
@@ -640,14 +634,12 @@ struct arithmetic_assignment_overloads<true>
 #undef DEFINE_OPERATOR
 }; // arithmetic_assignment_overloads
 
-/// @cond
 template<bool>
 struct iterators;
 
 template<>
 struct iterators<false>
 {};
-/// @endcond
 
 /// @brief Iterators helper for custom iterators
 template<>
