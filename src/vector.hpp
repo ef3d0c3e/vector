@@ -2,6 +2,7 @@
 #define VECTOR_HPP
 
 #include <array>
+#include <cmath>
 #include <concepts>
 #include <format>
 #include <initializer_list>
@@ -96,6 +97,10 @@ struct Arithmetic
 	/// 3>{1.5, 3.4, 3.2});
 	/// @endcode
 	bool implicit_casting = true;
+
+	/// Enables convenience math functions:
+	/// `dist`, `dist_squared`, `dot`
+	bool convenience = true;
 };
 
 /// @brief Controls which formatting options are enabled
@@ -634,6 +639,83 @@ struct arithmetic_assignment_overloads<true>
 #undef DEFINE_OPERATOR
 }; // arithmetic_assignment_overloads
 
+template <bool>
+struct arithmetic_convenience;
+
+template<>
+struct arithmetic_convenience<false>
+{};
+
+template<>
+struct arithmetic_convenience<true>
+{
+	/// Compute the euclidean norm squared of the vector
+	/// @param self The vector to compute the norm of
+	/// @returns \f$\displaystyle \cdot \sqrt{ \sum_{i=0}^{N-1} \mathtt{self[i]}^2 }\f$ 
+	template <vector_type Self>
+	constexpr decltype(auto) dist_squared(this const Self& self)
+	{
+		static constexpr auto settings = Self::SimdSettings.template get<"dist_squared(this const Self& self)">();
+		using R = std::result_of<decltype([](const Self& s, std::size_t i) -> auto { return s[i]*s[i]; })(const Self&, std::size_t)>::type;
+		R ret{};
+
+ 		for_each<Self::size(), settings>([&](std::size_t i) {
+			ret += self[i]*self[i];
+		});
+
+		return ret;
+	}
+
+	/// Compute the euclidean norm of the vector
+	/// @param self The vector to compute the norm of
+	/// @tparam R a floating type that supports `std::sqrt`
+	/// @returns \f$\displaystyle m \cdot \sqrt{ \sum_{i=0}^{N-1} \frac{\mathtt{self[i]}^2}{m^2} }\f$ 
+	/// where \f$\displaystyle m = \max_{ i \in 0 \ldots N-1} |\mathtt{self[i]}| \f$
+	///
+	/// @note This function normalizes the vector by dividing all operands by the max of the vector
+	template <std::floating_point R, vector_type Self>
+	constexpr decltype(auto) dist(this const Self& self)
+	{
+		R ret{};
+
+		// Find maximum component
+		R m{};
+		static constexpr auto settings_max = Self::SimdSettings.template get<"dist::max(this const Self& self)">();
+		for_each<Self::size(), settings_max>([&](std::size_t i) {
+			if (const auto& x = std::abs(self[i]); x > m)
+				m = x;
+		});
+		if (m == 0) [[unlikely]]
+			return m;
+
+		// Normalize and distance squared
+		static constexpr auto settings = Self::SimdSettings.template get<"dist(this const Self& self)">();
+		for_each<Self::size(), settings>([&](std::size_t i) {
+			const auto x = self[i]/m;
+			ret += x*x;
+		});
+
+		return std::sqrt(ret)*m;
+	}
+
+	template <vector_type Self, vector_type Other = Self>
+	constexpr decltype(auto) dot(this const Self& self, const Other& other)
+	{
+		using R = std::result_of<decltype([](const Self& s, const Other& o, std::size_t i){
+			return o[i] * s[i];
+		})(const Self&, const Other&, std::size_t)>::type;
+
+
+		R ret = R{};
+		static constexpr auto settings = Self::SimdSettings.template get<"dot(this const Self& self, const Other& other)">();
+		for_each<Self::size(), settings>([&](std::size_t i) {
+			ret += self[i]*other[i];
+		});
+
+		return ret;
+	}
+};
+
 template<bool>
 struct iterators;
 
@@ -882,6 +964,7 @@ struct Vector
   , details::arithmetic<_Features.arithmetic.enabled>
   , details::arithmetic_overloads<_Features.arithmetic.overloads>
   , details::arithmetic_assignment_overloads<_Features.arithmetic.assignment>
+  , details::arithmetic_convenience<_Features.arithmetic.convenience>
   , details::iterators<_Features.iterators.enabled && !_Features.extend_storage>
 {
 	/// Stored data if `extend_storage` is disabled

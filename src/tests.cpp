@@ -1,3 +1,5 @@
+#include "catch2/generators/catch_generators_random.hpp"
+#include "catch2/internal/catch_random_seed_generation.hpp"
 #include "vector.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <iterator>
@@ -110,6 +112,31 @@ TEST_CASE("Custom storage", "[v3]")
 		 }.template operator()<Ts>()),
 		 ...);
 	}(std::tuple<int, long, float, double>{});
+}
+
+TEST_CASE("Convenience", "Features")
+{
+	REQUIRE(vector::Vector<int, 2>{3,4}.dist_squared() == 25);
+	REQUIRE(vector::Vector<int, 2>{3,4}.dist<float>() == 5.f);
+	REQUIRE(vector::Vector<float, 2>{3,4}.dist_squared() == 25.f);
+	REQUIRE(vector::Vector<float, 2>{3,4}.dist<float>() == 5.f);
+
+	auto gen = Catch::Generators::RandomFloatingGenerator<double>(-1.0, 1.0, time(NULL));
+	for (auto i : std::ranges::iota_view{0,100})
+	{
+		std::array<double, 4> data{};
+		double distsq = 0.0;
+		for (auto& x : data)
+		{
+			gen.next();
+			x = gen.get();
+			distsq += x*x;
+		}
+
+		auto vec = vector::Vector<double, 4>{std::move(data)};
+		REQUIRE(vec.dist_squared() == distsq);
+		REQUIRE(vec.dist<double>() - std::sqrt(distsq) < 1E-10);
+	}
 }
 
 /// @brief Features tests
