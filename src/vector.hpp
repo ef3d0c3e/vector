@@ -263,7 +263,7 @@ class SettingsRegistry<SettingsField<Names, Settings>...>
 		}
 	}
 
-	public:
+public:
 	template<details::literal key>
 	static consteval decltype(auto) get()
 	{
@@ -471,38 +471,37 @@ struct arithmetic<false>
 template<>
 struct arithmetic<true>
 {
-#define DEFINE_OPERATOR(__op, __op_name)                                                         \
-	template<class Self, class Other = Self>                                                     \
-	    requires(vector_type<Self>) && (vector_type<Other>) &&                                   \
-	            (Self::size() == Other::size()) &&                                               \
-	            binary_operator_l<Self,                                                          \
-	                              Other,                                                         \
-	                              decltype([](auto const& a, auto const& b) -> decltype(auto) {  \
-		                              return a __op b;                                           \
-	                              }),                                                            \
-	                              Self::Features.arithmetic.implicit_casting>                    \
-	constexpr Self __op_name(this Self&& self, const Other& other)                               \
-	{                                                                                            \
-		static constexpr auto settings =                                                         \
-		  Self::SimdSettings.template get<#__op_name "(this Self& self, const Other& other)">(); \
-		for_each<Self::size(), settings>(                                                        \
-		  [&](std::size_t i) { self[i] = self[i] __op other[i]; });                              \
-		return std::move(self);                                                                  \
-	}                                                                                            \
-	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
-	            (!vector_type<T>) &&                                                             \
-	            binary_operator_scalar_l<Self,                                                   \
-	                                     T,                                                      \
-	                                     decltype([](auto const& a, auto const& b)               \
-	                                                -> decltype(auto) { return a __op b; }),     \
-	                                     Self::Features.arithmetic.implicit_casting>             \
-	constexpr Self __op_name(this Self&& self, const T& scalar)                                  \
-	{                                                                                            \
-		static constexpr auto settings =                                                         \
-		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();    \
-		for_each<Self::size(), settings>([&](std::size_t i) { self[i] = self[i] __op scalar; }); \
-		return std::move(self);                                                                  \
+#define DEFINE_OPERATOR(__op, __op_name)                                                          \
+	template<class Self, class Other = Self>                                                      \
+	    requires(vector_type<Self>) && (vector_type<Other>) && (Self::size() == Other::size()) && \
+	            binary_operator_l<Self,                                                           \
+	                              Other,                                                          \
+	                              decltype([](auto const& a, auto const& b) -> decltype(auto) {   \
+		                              return a __op b;                                            \
+	                              }),                                                             \
+	                              Self::Features.arithmetic.implicit_casting>                     \
+	constexpr Self __op_name(this Self&& self, const Other& other)                                \
+	{                                                                                             \
+		static constexpr auto settings =                                                          \
+		  Self::SimdSettings.template get<#__op_name "(this Self& self, const Other& other)">();  \
+		for_each<Self::size(), settings>(                                                         \
+		  [&](std::size_t i) { self[i] = self[i] __op other[i]; });                               \
+		return std::move(self);                                                                   \
+	}                                                                                             \
+	template<class Self, class T>                                                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&           \
+	            (!vector_type<T>) &&                                                              \
+	            binary_operator_scalar_l<Self,                                                    \
+	                                     T,                                                       \
+	                                     decltype([](auto const& a, auto const& b)                \
+	                                                -> decltype(auto) { return a __op b; }),      \
+	                                     Self::Features.arithmetic.implicit_casting>              \
+	constexpr Self __op_name(this Self&& self, const T& scalar)                                   \
+	{                                                                                             \
+		static constexpr auto settings =                                                          \
+		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();     \
+		for_each<Self::size(), settings>([&](std::size_t i) { self[i] = self[i] __op scalar; });  \
+		return std::move(self);                                                                   \
 	}
 
 	DEFINE_OPERATOR(+, add)
@@ -523,61 +522,61 @@ struct arithmetic_overloads<false>
 template<>
 struct arithmetic_overloads<true>
 {
-#define DEFINE_OPERATOR(__op, __op_name)                                                         \
-	template<class Self, class Other = Self>                                                     \
-	    requires(vector_type<Self>) && (vector_type<Other>) && (Self::size() == Other::size())   \
-	constexpr decltype(auto) operator __op(this const Self& self, const Other& other)            \
-	{                                                                                            \
-		if constexpr (binary_operator_l<Self,                                                    \
-		                                Other,                                                   \
-		                                decltype([](const auto& a, const auto& b) {              \
-			                                return a __op b;                                     \
-		                                }),                                                      \
-		                                Self::Features.arithmetic.implicit_casting>) {           \
-			static_assert(Self::Features.arithmetic.implicit_casting ||                          \
-			              std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
-			Self ret{};                                                                          \
-			static constexpr auto settings =                                                     \
-			  Self::SimdSettings                                                                 \
-			    .template get<#__op_name "(this const Self& self, const Other& other)">();       \
-			for_each<Self::size(), settings>(                                                    \
-			  [&](std::size_t i) { ret[i] = self[i] __op other[i]; });                           \
-			return ret;                                                                          \
-		} else if constexpr (binary_operator_r<Self,                                             \
-		                                       Other,                                            \
-		                                       decltype([](const auto& a, const auto& b) {       \
-			                                       return a __op b;                              \
-		                                       }),                                               \
-		                                       Other::Features.arithmetic.implicit_casting>) {   \
-			static_assert(Self::Features.arithmetic.implicit_casting ||                          \
-			              std::is_same_v<typename Self::base_type, typename Other::base_type>);  \
-			Other ret{};                                                                         \
-			static constexpr auto settings =                                                     \
-			  Other::SimdSettings                                                                \
-			    .template get<#__op_name "(this const Self& self, const Other& other)">();       \
-			for_each<Self::size(), settings>(                                                    \
-			  [&](std::size_t i) { ret[i] = self[i] __op other[i]; });                           \
-			return ret;                                                                          \
-		} else {                                                                                 \
-			[]<bool v = false> { static_assert(v, "Cannot define operator properly"); }();       \
-		}                                                                                        \
-	}                                                                                            \
-	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
-	            (!vector_type<T>) &&                                                             \
-	            binary_operator_scalar_l<Self,                                                   \
-	                                     T,                                                      \
-	                                     decltype([](auto const& a, auto const& b)               \
-	                                                -> decltype(auto) { return a __op b; }),     \
-	                                     Self::Features.arithmetic.implicit_casting>             \
-	constexpr Self operator __op(this const Self& self, const T& scalar)                         \
-	{                                                                                            \
-		static constexpr auto settings =                                                         \
-		  Self::SimdSettings                                                                     \
-		    .template get<#__op_name "(this const Self& self, const T& scalar)">();              \
-		Self ret{};                                                                              \
-		for_each<Self::size(), settings>([&](std::size_t i) { ret[i] = self[i] __op scalar; });  \
-		return ret;                                                                              \
+#define DEFINE_OPERATOR(__op, __op_name)                                                          \
+	template<class Self, class Other = Self>                                                      \
+	    requires(vector_type<Self>) && (vector_type<Other>) && (Self::size() == Other::size())    \
+	constexpr decltype(auto) operator __op(this const Self& self, const Other& other)             \
+	{                                                                                             \
+		if constexpr (binary_operator_l<Self,                                                     \
+		                                Other,                                                    \
+		                                decltype([](const auto& a, const auto& b) {               \
+			                                return a __op b;                                      \
+		                                }),                                                       \
+		                                Self::Features.arithmetic.implicit_casting>) {            \
+			static_assert(Self::Features.arithmetic.implicit_casting ||                           \
+			              std::is_same_v<typename Self::base_type, typename Other::base_type>);   \
+			Self ret{};                                                                           \
+			static constexpr auto settings =                                                      \
+			  Self::SimdSettings                                                                  \
+			    .template get<#__op_name "(this const Self& self, const Other& other)">();        \
+			for_each<Self::size(), settings>(                                                     \
+			  [&](std::size_t i) { ret[i] = self[i] __op other[i]; });                            \
+			return ret;                                                                           \
+		} else if constexpr (binary_operator_r<Self,                                              \
+		                                       Other,                                             \
+		                                       decltype([](const auto& a, const auto& b) {        \
+			                                       return a __op b;                               \
+		                                       }),                                                \
+		                                       Other::Features.arithmetic.implicit_casting>) {    \
+			static_assert(Self::Features.arithmetic.implicit_casting ||                           \
+			              std::is_same_v<typename Self::base_type, typename Other::base_type>);   \
+			Other ret{};                                                                          \
+			static constexpr auto settings =                                                      \
+			  Other::SimdSettings                                                                 \
+			    .template get<#__op_name "(this const Self& self, const Other& other)">();        \
+			for_each<Self::size(), settings>(                                                     \
+			  [&](std::size_t i) { ret[i] = self[i] __op other[i]; });                            \
+			return ret;                                                                           \
+		} else {                                                                                  \
+			[]<bool v = false> { static_assert(v, "Cannot define operator properly"); }();        \
+		}                                                                                         \
+	}                                                                                             \
+	template<class Self, class T>                                                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&           \
+	            (!vector_type<T>) &&                                                              \
+	            binary_operator_scalar_l<Self,                                                    \
+	                                     T,                                                       \
+	                                     decltype([](auto const& a, auto const& b)                \
+	                                                -> decltype(auto) { return a __op b; }),      \
+	                                     Self::Features.arithmetic.implicit_casting>              \
+	constexpr Self operator __op(this const Self& self, const T& scalar)                          \
+	{                                                                                             \
+		static constexpr auto settings =                                                          \
+		  Self::SimdSettings                                                                      \
+		    .template get<#__op_name "(this const Self& self, const T& scalar)">();               \
+		Self ret{};                                                                               \
+		for_each<Self::size(), settings>([&](std::size_t i) { ret[i] = self[i] __op scalar; });   \
+		return ret;                                                                               \
 	}
 
 	DEFINE_OPERATOR(+, add)
@@ -598,37 +597,36 @@ struct arithmetic_assignment_overloads<false>
 template<>
 struct arithmetic_assignment_overloads<true>
 {
-#define DEFINE_OPERATOR(__op, __op_name)                                                         \
-	template<class Self, class Other = Self>                                                     \
-	    requires(vector_type<Self>) && (vector_type<Other>) &&                                   \
-	            (Self::size() == Other::size()) &&                                               \
-	            assign_operator<Self,                                                            \
-	                            Other,                                                           \
-	                            decltype([](auto& a, auto const& b) -> decltype(auto) {          \
-		                            return a __op b;                                             \
-	                            })>                                                              \
-	constexpr Self& operator __op(this Self & self, const Other & other)                         \
-	{                                                                                            \
-		static constexpr auto settings =                                                         \
-		  Self::SimdSettings.template get<#__op_name "(this Self& self, const Other& other)">(); \
-		for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op other[i]; });         \
-		return self;                                                                             \
-	}                                                                                            \
-	template<class Self, class T>                                                                \
-	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&          \
-	            (!vector_type<T>) &&                                                             \
-	            assign_operator_scalar<Self,                                                     \
-	                                   T,                                                        \
-	                                   decltype([](auto& a, auto const& b) -> decltype(auto) {   \
-		                                   return a __op b;                                      \
-	                                   }),                                                       \
-	                                   Self::Features.arithmetic.implicit_casting>               \
-	constexpr Self& operator __op(this Self & self, const T & scalar)                            \
-	{                                                                                            \
-		static constexpr auto settings =                                                         \
-		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();    \
-		for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op scalar; });           \
-		return self;                                                                             \
+#define DEFINE_OPERATOR(__op, __op_name)                                                          \
+	template<class Self, class Other = Self>                                                      \
+	    requires(vector_type<Self>) && (vector_type<Other>) && (Self::size() == Other::size()) && \
+	            assign_operator<Self,                                                             \
+	                            Other,                                                            \
+	                            decltype([](auto& a, auto const& b) -> decltype(auto) {           \
+		                            return a __op b;                                              \
+	                            })>                                                               \
+	constexpr Self& operator __op(this Self & self, const Other & other)                          \
+	{                                                                                             \
+		static constexpr auto settings =                                                          \
+		  Self::SimdSettings.template get<#__op_name "(this Self& self, const Other& other)">();  \
+		for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op other[i]; });          \
+		return self;                                                                              \
+	}                                                                                             \
+	template<class Self, class T>                                                                 \
+	    requires(Self::Features.arithmetic.scalar_operations) && (vector_type<Self>) &&           \
+	            (!vector_type<T>) &&                                                              \
+	            assign_operator_scalar<Self,                                                      \
+	                                   T,                                                         \
+	                                   decltype([](auto& a, auto const& b) -> decltype(auto) {    \
+		                                   return a __op b;                                       \
+	                                   }),                                                        \
+	                                   Self::Features.arithmetic.implicit_casting>                \
+	constexpr Self& operator __op(this Self & self, const T & scalar)                             \
+	{                                                                                             \
+		static constexpr auto settings =                                                          \
+		  Self::SimdSettings.template get<#__op_name "(this Self& self, const T& scalar)">();     \
+		for_each<Self::size(), settings>([&](std::size_t i) { self[i] __op scalar; });            \
+		return self;                                                                              \
 	}
 
 	DEFINE_OPERATOR(+=, add_assign)
@@ -639,7 +637,7 @@ struct arithmetic_assignment_overloads<true>
 #undef DEFINE_OPERATOR
 }; // arithmetic_assignment_overloads
 
-template <bool>
+template<bool>
 struct arithmetic_convenience;
 
 template<>
@@ -649,38 +647,43 @@ struct arithmetic_convenience<false>
 template<>
 struct arithmetic_convenience<true>
 {
-	/// Compute the euclidean norm squared of the vector
+	/// @brief Compute the euclidean norm squared of the vector
+	///
 	/// @param self The vector to compute the norm of
-	/// @returns \f$\displaystyle \cdot \sqrt{ \sum_{i=0}^{N-1} \mathtt{self[i]}^2 }\f$ 
-	template <vector_type Self>
+	/// @returns \f$\displaystyle \cdot \sqrt{ \sum_{i=0}^{N-1} \mathtt{self[i]}^2 }\f$
+	template<vector_type Self>
 	constexpr decltype(auto) dist_squared(this const Self& self)
 	{
-		static constexpr auto settings = Self::SimdSettings.template get<"dist_squared(this const Self& self)">();
-		using R = std::result_of<decltype([](const Self& s, std::size_t i) -> auto { return s[i]*s[i]; })(const Self&, std::size_t)>::type;
+		static constexpr auto settings =
+		  Self::SimdSettings.template get<"dist_squared(this const Self& self)">();
+		using R = std::result_of<decltype([](const Self& s, std::size_t i) -> auto {
+			return s[i] * s[i];
+		})(const Self&, std::size_t)>::type;
 		R ret{};
 
- 		for_each<Self::size(), settings>([&](std::size_t i) {
-			ret += self[i]*self[i];
-		});
+		for_each<Self::size(), settings>([&](std::size_t i) { ret += self[i] * self[i]; });
 
 		return ret;
 	}
 
-	/// Compute the euclidean norm of the vector
+	/// @brief Compute the euclidean norm of the vector
+	///
 	/// @param self The vector to compute the norm of
 	/// @tparam R a floating type that supports `std::sqrt`
-	/// @returns \f$\displaystyle m \cdot \sqrt{ \sum_{i=0}^{N-1} \frac{\mathtt{self[i]}^2}{m^2} }\f$ 
-	/// where \f$\displaystyle m = \max_{ i \in 0 \ldots N-1} |\mathtt{self[i]}| \f$
+	/// @returns \f$\displaystyle m \cdot \sqrt{ \sum_{i=0}^{N-1} \frac{\mathtt{self[i]}^2}{m^2}
+	/// }\f$ where \f$\displaystyle m = \max_{ i \in 0 \ldots N-1} |\mathtt{self[i]}| \f$
 	///
-	/// @note This function normalizes the vector by dividing all operands by the max of the vector
-	template <std::floating_point R, vector_type Self>
+	/// @note This function normalizes the vector by dividing all operands by the max of the
+	/// vector. This is done to avoir overflow.
+	template<std::floating_point R, vector_type Self>
 	constexpr decltype(auto) dist(this const Self& self)
 	{
 		R ret{};
 
 		// Find maximum component
 		R m{};
-		static constexpr auto settings_max = Self::SimdSettings.template get<"dist::max(this const Self& self)">();
+		static constexpr auto settings_max =
+		  Self::SimdSettings.template get<"dist::max(this const Self& self)">();
 		for_each<Self::size(), settings_max>([&](std::size_t i) {
 			if (const auto& x = std::abs(self[i]); x > m)
 				m = x;
@@ -689,28 +692,40 @@ struct arithmetic_convenience<true>
 			return m;
 
 		// Normalize and distance squared
-		static constexpr auto settings = Self::SimdSettings.template get<"dist(this const Self& self)">();
+		static constexpr auto settings =
+		  Self::SimdSettings.template get<"dist(this const Self& self)">();
 		for_each<Self::size(), settings>([&](std::size_t i) {
-			const auto x = self[i]/m;
-			ret += x*x;
+			const auto x = self[i] / m;
+			ret += x * x;
 		});
 
-		return std::sqrt(ret)*m;
+		return std::sqrt(ret) * m;
 	}
 
-	template <vector_type Self, vector_type Other = Self>
+	/// @brief Computes the dot product
+	///
+	/// @param self The left operand
+	/// @param other The right operand
+	/// @returns The dot product:
+	/// \f$\displaystyle \sum_{i=0}^{N-1} \mathtt{self[i]}\cdot\mathtt{other[i]}\f$
+	template<vector_type Self, vector_type Other = Self>
+	    requires(Self::size() == Other::size()) &&
+	            binary_operator_l<Self,
+	                              Other,
+	                              decltype([](auto const& a, auto const& b) -> decltype(auto) {
+		                              return a * b;
+	                              }),
+	                              Self::Features.arithmetic.implicit_casting>
 	constexpr decltype(auto) dot(this const Self& self, const Other& other)
 	{
-		using R = std::result_of<decltype([](const Self& s, const Other& o, std::size_t i){
+		using R = std::result_of<decltype([](const Self& s, const Other& o, std::size_t i) {
 			return o[i] * s[i];
 		})(const Self&, const Other&, std::size_t)>::type;
 
-
 		R ret = R{};
-		static constexpr auto settings = Self::SimdSettings.template get<"dot(this const Self& self, const Other& other)">();
-		for_each<Self::size(), settings>([&](std::size_t i) {
-			ret += self[i]*other[i];
-		});
+		static constexpr auto settings =
+		  Self::SimdSettings.template get<"dot(this const Self& self, const Other& other)">();
+		for_each<Self::size(), settings>([&](std::size_t i) { ret += self[i] * other[i]; });
 
 		return ret;
 	}
@@ -1112,8 +1127,7 @@ struct Vector
 	/// This is called if the storage is not extended (i.e. `extend_storage` is disabled) and the
 	/// storage is copyable.
 	constexpr Vector(const Vector& other)
-	    requires(Features.copy_constructor) &&
-	            (!Features.extend_storage) && std::copyable<Storage>
+	    requires(Features.copy_constructor) && (!Features.extend_storage) && std::copyable<Storage>
 	  : _storage{ other._storage }
 	{
 		if (this == &other) [[unlikely]] {
@@ -1197,7 +1211,10 @@ struct Vector
 	}
 
 	/// @brief Copy assignment
+	///
+	/// @param self Vector to copy into
 	/// @param other Vector to copy element-wise into self
+	/// @returns self
 	constexpr Vector& operator=(this Vector& self, const Vector& other)
 	    requires std::copyable<T>
 	{
@@ -1213,7 +1230,10 @@ struct Vector
 	}
 
 	/// @brief Move assignment
+	///
+	/// @param self Vector to copy into
 	/// @param other Vector to move into self
+	/// @returns self
 	constexpr Vector& operator=(this Vector& self, Vector&& other)
 	    requires std::is_move_assignable_v<Storage>
 	{
@@ -1235,7 +1255,7 @@ struct Vector
 	/// Clones the vector by either cloning it's storage,
 	/// or by default-initializing the vector and copying element-wise.
 	///
-	/// @pram self Vector to clone
+	/// @param self Vector to clone
 	constexpr Vector clone(this const Vector& self)
 	{
 		// Copy storage

@@ -3,10 +3,10 @@
 #include "vector.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <iterator>
-#include <type_traits>
-#include <utility>
 #include <sstream>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 TEST_CASE("Basic operators", "[v4]")
 {
@@ -43,10 +43,7 @@ struct vec3_storage
 		T x, y, z;
 	};
 
-	constexpr decltype(auto) operator[](this auto&& self, std::size_t i)
-	{
-		return (self.data[i]);
-	}
+	constexpr decltype(auto) operator[](this auto&& self, std::size_t i) { return (self.data[i]); }
 };
 
 /// @brief Non structural Vec3 storage
@@ -60,11 +57,8 @@ class vec3_storage_ns
 		T x, y, z;
 	};
 
-	public:
-	constexpr decltype(auto) operator[](this auto&& self, std::size_t i)
-	{
-		return (self.data[i]);
-	}
+public:
+	constexpr decltype(auto) operator[](this auto&& self, std::size_t i) { return (self.data[i]); }
 };
 
 TEST_CASE("Custom storage", "[v3]")
@@ -116,27 +110,30 @@ TEST_CASE("Custom storage", "[v3]")
 
 TEST_CASE("Convenience", "Features")
 {
-	REQUIRE(vector::Vector<int, 2>{3,4}.dist_squared() == 25);
-	REQUIRE(vector::Vector<int, 2>{3,4}.dist<float>() == 5.f);
-	REQUIRE(vector::Vector<float, 2>{3,4}.dist_squared() == 25.f);
-	REQUIRE(vector::Vector<float, 2>{3,4}.dist<float>() == 5.f);
+	REQUIRE(vector::Vector<int, 2>{ 3, 4 }.dist_squared() == 25);
+	REQUIRE(vector::Vector<int, 2>{ 3, 4 }.dist<float>() == 5.f);
+	REQUIRE(vector::Vector<float, 2>{ 3, 4 }.dist_squared() == 25.f);
+	REQUIRE(vector::Vector<float, 2>{ 3, 4 }.dist<float>() == 5.f);
 
 	auto gen = Catch::Generators::RandomFloatingGenerator<double>(-1.0, 1.0, time(NULL));
-	for (auto i : std::ranges::iota_view{0,100})
-	{
+	for (auto _ : std::ranges::iota_view{ 0, 100 }) {
 		std::array<double, 4> data{};
 		double distsq = 0.0;
-		for (auto& x : data)
-		{
+		for (auto& x : data) {
 			gen.next();
 			x = gen.get();
-			distsq += x*x;
+			distsq += x * x;
 		}
 
-		auto vec = vector::Vector<double, 4>{std::move(data)};
+		auto vec = vector::Vector<double, 4>{ std::move(data) };
 		REQUIRE(vec.dist_squared() == distsq);
 		REQUIRE(vec.dist<double>() - std::sqrt(distsq) < 1E-10);
+		REQUIRE(vec.dot(vector::Vector<double, 4>{1,0,0,0}) == vec[0]);
+		REQUIRE(vec.dot(vector::Vector<double, 4>{0,1,0,0}) == vec[1]);
+		REQUIRE(vec.dot(vector::Vector<double, 4>{0,0,1,0}) == vec[2]);
+		REQUIRE(vec.dot(vector::Vector<double, 4>{0,0,0,1}) == vec[3]);
 	}
+
 }
 
 /// @brief Features tests
@@ -295,7 +292,8 @@ TEST_CASE("Tuple-like", "Features")
 	                         }>{});
 }
 
-TEST_CASE("Formatting", "Features") {
+TEST_CASE("Formatting", "Features")
+{
 	[]<auto... Fs>(std::integral_constant<vector::VectorFeatures, Fs>...){
 		(([]<auto F>{
 			using v4 = vector::Vector<float, 4, std::array, F>;
@@ -320,5 +318,4 @@ TEST_CASE("Formatting", "Features") {
 			},
 		}>{}
 	);
-
 }
